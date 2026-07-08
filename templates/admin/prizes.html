@@ -1,0 +1,90 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row" style="justify-content:space-between;">
+  <h1 class="title">獎品管理</h1>
+  <a class="btn secondary" href="{{ url_for('admin_logout') }}">登出</a>
+</div>
+
+<div class="nav">
+  <a href="{{ url_for('admin_dashboard') }}">總覽</a>
+  <a href="{{ url_for('admin_employees') }}">員工</a>
+  <a class="active" href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a href="{{ url_for('admin_settings') }}">設定</a>
+  <a href="{{ url_for('admin_qrcode') }}">QR Code</a>
+</div>
+
+<div class="card">
+  <h2 class="title">新增獎項</h2>
+  <p class="muted">新增後系統會自動產生對應數量的獎品編號，每個編號只會被抽走一次。</p>
+  <form method="post" action="{{ url_for('admin_prize_new') }}" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="row">
+      <div style="flex:2;min-width:160px;">
+        <label>獎項名稱 *</label>
+        <input name="name" required placeholder="例如：iPad mini">
+      </div>
+      <div style="flex:1;min-width:120px;">
+        <label>等級</label>
+        <input name="tier" placeholder="特獎 / 頭獎 / 普獎">
+      </div>
+      <div style="flex:1;min-width:100px;">
+        <label>數量 *</label>
+        <input name="quantity" type="number" min="1" value="1" required>
+      </div>
+    </div>
+    <button class="btn" type="submit" style="margin-top:12px;">新增</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="title">獎品清單（共 {{ prizes|length }} 項）</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>狀態</th><th>獎項</th><th>等級</th><th>剩餘 / 總數</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for p in prizes %}
+          <tr class="{{ '' if p['is_active'] else 'inactive' }}">
+            <td>{{ '啟用' if p['is_active'] else '停用' }}</td>
+            <td>{{ p['name'] }}</td>
+            <td>{{ p['tier'] or '-' }}</td>
+            <td><strong>{{ p['remaining'] }}</strong> / {{ p['total'] }}</td>
+            <td>
+              <details>
+                <summary style="cursor:pointer;color:#2563eb;">編輯</summary>
+                <form method="post" action="{{ url_for('admin_prize_edit', prize_id=p['id']) }}" style="margin-top:8px;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input name="name" value="{{ p['name'] }}" required>
+                  <input name="tier" value="{{ p['tier'] or '' }}" placeholder="等級">
+                  <button class="btn" type="submit" style="margin-top:8px;">儲存</button>
+                </form>
+              </details>
+              <details style="margin-top:6px;">
+                <summary style="cursor:pointer;color:#2563eb;">加開數量</summary>
+                <form method="post" action="{{ url_for('admin_prize_add_units', prize_id=p['id']) }}" style="margin-top:8px;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input name="quantity" type="number" min="1" value="1" required>
+                  <button class="btn success" type="submit" style="margin-top:8px;">加開</button>
+                </form>
+              </details>
+              <form method="post" action="{{ url_for('admin_prize_toggle', prize_id=p['id']) }}"
+                    style="margin-top:6px;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="btn secondary" type="submit">{{ '停用' if p['is_active'] else '啟用' }}</button>
+              </form>
+              <form method="post" action="{{ url_for('admin_prize_delete', prize_id=p['id']) }}"
+                    style="margin-top:6px;" onsubmit="return confirm('確定刪除此獎項？（有中獎紀錄無法刪）')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="btn danger" type="submit">刪除</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">尚未設定獎品</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

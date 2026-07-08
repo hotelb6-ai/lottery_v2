@@ -1,0 +1,30 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row" style="justify-content:space-between;">
+  <h1 class="title">員工登入 QR Code</h1>
+  <a class="btn secondary" href="{{ url_for('admin_logout') }}">登出</a>
+</div>
+
+<div class="nav">
+  <a href="{{ url_for('admin_dashboard') }}">總覽</a>
+  <a href="{{ url_for('admin_employees') }}">員工</a>
+  <a href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a href="{{ url_for('admin_settings') }}">設定</a>
+  <a class="active" href="{{ url_for('admin_qrcode') }}">QR Code</a>
+</div>
+
+<div class="card" style="text-align:center;">
+  <p class="muted">投影下面這張 QR Code 給員工掃描，即可進入登入頁：</p>
+  <img src="data:image/png;base64,{{ qr_b64 }}" alt="QR Code"
+       style="max-width:320px;width:100%;height:auto;image-rendering:pixelated;
+              border:12px solid #fff;border-radius:16px;box-shadow:0 10px 30px rgba(0,0,0,0.1);">
+  <p style="font-size:20px;margin-top:16px;word-break:break-all;">
+    <strong>{{ target_url }}</strong>
+  </p>
+  <p class="muted">若網址錯了，可用下方欄位換一個：</p>
+  <form method="get" action="{{ url_for('admin_qrcode') }}" style="max-width:520px;margin:0 auto;">
+    <input name="url" value="{{ target_url }}" required>
+    <button class="btn" type="submit" style="margin-top:8px;">重新產生</button>
+  </form>
+</div>
+{% endblock %}

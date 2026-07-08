@@ -1,0 +1,12 @@
+{
+  "_comment": "此檔案僅供參考格式。實際員工與獎品請進管理後台新增。",
+  "employees": [
+    { "employee_no": "E001", "name": "王小明", "department": "櫃檯", "password": "123456" },
+    { "employee_no": "E002", "name": "陳小美", "department": "房務", "password": "123456" }
+  ],
+  "prizes": [
+    { "name": "iPad mini", "tier": "特獎", "quantity": 1 },
+    { "name": "AirPods Pro", "tier": "頭獎", "quantity": 2 },
+    { "name": "超商禮券 500 元", "tier": "普獎", "quantity": 5 }
+  ]
+}

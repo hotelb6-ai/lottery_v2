@@ -1,0 +1,79 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row" style="justify-content:space-between;">
+  <div>
+    <h1 class="title">後台總覽</h1>
+    <p class="subtitle">{{ event_title }}｜狀態：{{ '開放中' if draw_open else '已暫停' }}</p>
+  </div>
+  <a class="btn secondary" href="{{ url_for('admin_logout') }}">登出</a>
+</div>
+
+<div class="nav">
+  <a class="active" href="{{ url_for('admin_dashboard') }}">總覽</a>
+  <a href="{{ url_for('admin_employees') }}">員工</a>
+  <a href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a href="{{ url_for('admin_settings') }}">設定</a>
+  <a href="{{ url_for('admin_qrcode') }}">QR Code</a>
+</div>
+
+<div class="grid">
+  <div class="stat"><strong>員工總數</strong><div class="num">{{ summary.employee_total }}</div></div>
+  <div class="stat"><strong>已抽人數</strong><div class="num">{{ summary.drawn_total }}</div></div>
+  <div class="stat"><strong>獎品總數</strong><div class="num">{{ summary.prize_total }}</div></div>
+  <div class="stat"><strong>剩餘獎品</strong><div class="num">{{ summary.remaining_total }}</div></div>
+</div>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between;">
+    <h2 class="title">獎品庫存</h2>
+    <a class="btn outline" href="{{ url_for('admin_prizes') }}">前往管理</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>獎項</th><th>等級</th><th>剩餘</th><th>總數</th></tr>
+      </thead>
+      <tbody>
+        {% for row in inventory %}
+          <tr>
+            <td>{{ row['name'] }}</td>
+            <td>{{ row['tier'] or '-' }}</td>
+            <td><strong>{{ row['remaining'] }}</strong></td>
+            <td>{{ row['total'] }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="4" class="muted">尚未設定獎品</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card">
+  <div class="row" style="justify-content:space-between;">
+    <h2 class="title">中獎紀錄</h2>
+    <a class="btn outline" href="{{ url_for('admin_export_winners') }}">匯出 CSV</a>
+  </div>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>工號</th><th>姓名</th><th>部門</th><th>獎項</th><th>編號</th><th>時間</th></tr>
+      </thead>
+      <tbody>
+        {% for r in records %}
+          <tr>
+            <td>{{ r['employee_no'] }}</td>
+            <td>{{ r['name'] }}</td>
+            <td>{{ r['department'] or '-' }}</td>
+            <td>{{ r['prize_name'] }}（{{ r['prize_tier'] or '普獎' }}）</td>
+            <td>{{ r['unit_code'] }}</td>
+            <td>{{ r['drawn_at'] }}</td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted">目前尚無抽獎紀錄</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

@@ -1,0 +1,64 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="hero">
+  <h1>{{ event_title }}</h1>
+  <p>歡迎 {{ employee.name }}（{{ employee.employee_no }}{% if employee.department %}．{{ employee.department }}{% endif %}）</p>
+</div>
+
+<div class="grid">
+  <div class="stat">
+    <strong>剩餘獎品</strong>
+    <div class="num">{{ remaining }}</div>
+  </div>
+  <div class="stat">
+    <strong>抽獎資格</strong>
+    <div class="num">{{ '已使用' if employee.has_drawn else '可抽 1 次' }}</div>
+  </div>
+</div>
+
+<div class="card">
+  {% if record %}
+    <h2 class="title" style="text-align:center;">🎉 您的中獎結果</h2>
+    <div class="result-card" style="margin-top:12px;">
+      <span class="tier">{{ record['prize_tier'] or '普獎' }}</span>
+      <div class="prize-name">{{ record['prize_name'] }}</div>
+      <p class="muted" style="margin:6px 0;">獎品編號：{{ record['unit_code'] }}</p>
+      <p class="muted" style="margin:6px 0;">抽獎時間：{{ record['drawn_at'] }}</p>
+    </div>
+    <p class="muted" style="text-align:center;margin-top:16px;">感謝參與！領獎請洽現場工作人員 🙏</p>
+  {% else %}
+    {% if not draw_open %}
+      <h2 class="title" style="text-align:center;">抽獎尚未開放</h2>
+      <p class="muted" style="text-align:center;">請等待主持人宣布開始，再重新整理此頁面。</p>
+    {% elif remaining == 0 %}
+      <h2 class="title" style="text-align:center;">獎品已抽完</h2>
+      <p class="muted" style="text-align:center;">很抱歉，本次獎品已全部發送完畢。</p>
+    {% else %}
+      <h2 class="title" style="text-align:center;">準備好了嗎？</h2>
+      <p class="muted" style="text-align:center;">按下按鈕即會隨機分配一份獎品。</p>
+      <form method="post" action="{{ url_for('do_draw') }}" onsubmit="return handleDraw(this)">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <button id="drawBtn" class="btn big block" type="submit" style="margin-top:16px;">
+          🎲 立即抽獎
+        </button>
+      </form>
+    {% endif %}
+  {% endif %}
+</div>
+
+<div class="card" style="text-align:center;">
+  <a class="btn secondary" href="{{ url_for('logout') }}">登出</a>
+</div>
+
+<script>
+function handleDraw(form) {
+  var btn = document.getElementById('drawBtn');
+  if (!btn) return true;
+  if (btn.dataset.submitting === '1') return false;
+  btn.dataset.submitting = '1';
+  btn.disabled = true;
+  btn.textContent = '抽獎中…請稍候';
+  return true;
+}
+</script>
+{% endblock %}

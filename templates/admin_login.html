@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="card" style="max-width:480px;margin:24px auto;">
+  <h1 class="title">管理後台登入</h1>
+  <p class="subtitle">僅供活動主辦人使用</p>
+  <form method="post" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label for="username">帳號</label>
+    <input id="username" name="username" required placeholder="admin" autocomplete="username">
+    <label for="password">密碼</label>
+    <input id="password" name="password" type="password" required autocomplete="current-password">
+    <button class="btn block" type="submit" style="margin-top:20px;">登入後台</button>
+  </form>
+  <div class="hr"></div>
+  <p class="muted"><a href="{{ url_for('login') }}">← 返回員工登入</a></p>
+</div>
+{% endblock %}

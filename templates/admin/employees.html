@@ -1,0 +1,95 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row" style="justify-content:space-between;">
+  <h1 class="title">員工管理</h1>
+  <a class="btn secondary" href="{{ url_for('admin_logout') }}">登出</a>
+</div>
+
+<div class="nav">
+  <a href="{{ url_for('admin_dashboard') }}">總覽</a>
+  <a class="active" href="{{ url_for('admin_employees') }}">員工</a>
+  <a href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a href="{{ url_for('admin_settings') }}">設定</a>
+  <a href="{{ url_for('admin_qrcode') }}">QR Code</a>
+</div>
+
+<div class="card">
+  <h2 class="title">新增單一員工</h2>
+  <form method="post" action="{{ url_for('admin_employee_new') }}" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <div class="row">
+      <div style="flex:1;min-width:120px;">
+        <label>工號 *</label>
+        <input name="employee_no" required placeholder="E001">
+      </div>
+      <div style="flex:1;min-width:120px;">
+        <label>姓名 *</label>
+        <input name="name" required placeholder="王小明">
+      </div>
+      <div style="flex:1;min-width:120px;">
+        <label>部門</label>
+        <input name="department" placeholder="櫃檯">
+      </div>
+      <div style="flex:1;min-width:120px;">
+        <label>密碼 *</label>
+        <input name="password" required placeholder="至少 4 字元">
+      </div>
+    </div>
+    <button class="btn" type="submit" style="margin-top:12px;">新增</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="title">批次匯入（貼上 CSV）</h2>
+  <p class="muted">
+    每行一位員工，欄位依序：<code>工號,姓名,部門,密碼</code><br>
+    範例：<code>E001,王小明,櫃檯,123456</code>
+  </p>
+  <form method="post" action="{{ url_for('admin_employee_bulk') }}">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <textarea name="csv_data" placeholder="E001,王小明,櫃檯,123456&#10;E002,陳小美,房務,123456"></textarea>
+    <button class="btn" type="submit" style="margin-top:12px;">批次匯入</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="title">員工清單（共 {{ employees|length }} 人）</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>狀態</th><th>工號</th><th>姓名</th><th>部門</th><th>已抽</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for e in employees %}
+          <tr class="{{ '' if e['is_active'] else 'inactive' }}">
+            <td>{{ '啟用' if e['is_active'] else '停用' }}</td>
+            <td>{{ e['employee_no'] }}</td>
+            <td>{{ e['name'] }}</td>
+            <td>{{ e['department'] or '-' }}</td>
+            <td>{{ '✓ ' ~ e['drawn_at'] if e['has_drawn'] else '－' }}</td>
+            <td>
+              <details>
+                <summary style="cursor:pointer;color:#2563eb;">編輯</summary>
+                <form method="post" action="{{ url_for('admin_employee_edit', emp_id=e['id']) }}" style="margin-top:8px;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input name="name" value="{{ e['name'] }}" required>
+                  <input name="department" value="{{ e['department'] or '' }}" placeholder="部門">
+                  <input name="password" placeholder="留白 = 不改密碼">
+                  <button class="btn" type="submit" style="margin-top:8px;">儲存</button>
+                </form>
+              </details>
+              <form method="post" action="{{ url_for('admin_employee_toggle', emp_id=e['id']) }}"
+                    style="margin-top:6px;" onsubmit="return confirm('確定切換啟用狀態？')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="btn secondary" type="submit">{{ '停用' if e['is_active'] else '啟用' }}</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="6" class="muted">尚未新增員工</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}
