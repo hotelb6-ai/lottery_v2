@@ -2,7 +2,10 @@
 {% block content %}
 <div class="hero">
   <h1>{{ event_title }}</h1>
-  <p>歡迎 {{ employee.name }}（{{ employee.employee_no }}{% if employee.department %}．{{ employee.department }}{% endif %}）</p>
+  <p>
+    歡迎 {{ employee.name }}（{{ employee.employee_no }}{% if employee.department %}．{{ employee.department }}{% endif %}）
+    {% if emp_branch %}<br><small style="opacity:0.9;">您所屬館別：{{ emp_branch['name'] }}</small>{% endif %}
+  </p>
 </div>
 
 <div class="grid">
@@ -30,9 +33,19 @@
     {% if not draw_open %}
       <h2 class="title" style="text-align:center;">抽獎尚未開放</h2>
       <p class="muted" style="text-align:center;">請等待主持人宣布開始，再重新整理此頁面。</p>
+    {% elif not active_branch %}
+      <h2 class="title" style="text-align:center;">尚未指定活動館別</h2>
+      <p class="muted" style="text-align:center;">請洽現場工作人員。</p>
+    {% elif branch_mismatch %}
+      <h2 class="title" style="text-align:center;">本場活動不是您所屬館別</h2>
+      <p class="muted" style="text-align:center;">
+        目前進行中：<strong>{{ active_branch['name'] }}</strong><br>
+        您所屬館別：<strong>{{ emp_branch['name'] if emp_branch else '（未設定）' }}</strong><br>
+        請等待您館的場次再回來抽獎。
+      </p>
     {% elif remaining == 0 %}
       <h2 class="title" style="text-align:center;">獎品已抽完</h2>
-      <p class="muted" style="text-align:center;">很抱歉，本次獎品已全部發送完畢。</p>
+      <p class="muted" style="text-align:center;">很抱歉，本館獎品已全部發送完畢。</p>
     {% else %}
       <h2 class="title" style="text-align:center;">準備好了嗎？</h2>
       <p class="muted" style="text-align:center;">按下按鈕即會隨機分配一份獎品。</p>

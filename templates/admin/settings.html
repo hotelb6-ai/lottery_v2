@@ -9,8 +9,33 @@
   <a href="{{ url_for('admin_dashboard') }}">總覽</a>
   <a href="{{ url_for('admin_employees') }}">員工</a>
   <a href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a href="{{ url_for('admin_branches') }}">館別</a>
   <a class="active" href="{{ url_for('admin_settings') }}">設定</a>
   <a href="{{ url_for('admin_qrcode') }}">QR Code</a>
+</div>
+
+<div class="card" style="border:2px solid #16a34a;">
+  <h2 class="title">🎯 目前活動館別</h2>
+  <p class="muted">切換要哪個館的員工進來抽獎，其他館的員工登入後只能看已抽紀錄、無法抽獎。</p>
+  {% if active_branch %}
+    <p style="font-size:22px;font-weight:800;color:#16a34a;">目前：{{ active_branch['name'] }}</p>
+  {% else %}
+    <p style="color:#dc2626;font-weight:700;">⚠️ 尚未指定活動館別！員工目前無法抽獎。</p>
+  {% endif %}
+  {% if branches %}
+    <form method="post" action="{{ url_for('admin_set_active_branch') }}">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>切換到：</label>
+      <select name="branch_id" required>
+        {% for b in branches %}
+          <option value="{{ b['id'] }}" {% if b['id'] == active_branch_id %}selected{% endif %}>{{ b['name'] }}</option>
+        {% endfor %}
+      </select>
+      <button class="btn success" type="submit" style="margin-top:12px;">切換</button>
+    </form>
+  {% else %}
+    <p><a class="btn" href="{{ url_for('admin_branches') }}">前往館別管理新增</a></p>
+  {% endif %}
 </div>
 
 <div class="card">
@@ -47,13 +72,21 @@
 </div>
 
 <div class="card" style="border:1px solid #fecaca;background:#fff7f7;">
-  <h2 class="title" style="color:#b91c1c;">危險區：重置所有抽獎紀錄</h2>
+  <h2 class="title" style="color:#b91c1c;">危險區：重置抽獎紀錄</h2>
   <p class="muted">
-    此動作會：清空所有中獎紀錄、把所有獎品狀態回到 AVAILABLE、把員工 has_drawn 歸零。<br>
-    只在正式活動前的測試階段使用，正式活動中請勿按。
+    重置的用途：測試完想清乾淨、或者 A 館場次結束要接著辦 B 館場次時把上一場的資料歸零。<br>
+    <strong>只在「目前活動館」重置</strong> → 上一場已抽的員工歸零、獎品狀態回 AVAILABLE。<br>
+    <strong>全部館別重置</strong> → 所有館的資料一次歸零（不常用，慎用）。
   </p>
   <form method="post" action="{{ url_for('admin_reset') }}" onsubmit="return confirm('真的要重置？此動作無法復原！')">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>重置範圍</label>
+    <select name="scope">
+      <option value="active" selected>
+        只重置「目前活動館：{{ active_branch['name'] if active_branch else '（未指定）' }}」
+      </option>
+      <option value="all">重置全部館別</option>
+    </select>
     <label>請於下方輸入 <code>RESET</code> 後按送出以確認</label>
     <input name="confirm" placeholder="RESET" required>
     <button class="btn danger" type="submit" style="margin-top:12px;">重置</button>

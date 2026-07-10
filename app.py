@@ -149,6 +149,13 @@ SQLITE_DDL = '''
 PRAGMA journal_mode=WAL;
 PRAGMA foreign_keys = ON;
 
+CREATE TABLE IF NOT EXISTS branches (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL UNIQUE,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS employees (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     employee_no TEXT NOT NULL UNIQUE,
@@ -158,6 +165,7 @@ CREATE TABLE IF NOT EXISTS employees (
     is_active INTEGER NOT NULL DEFAULT 1,
     has_drawn INTEGER NOT NULL DEFAULT 0,
     drawn_at TEXT,
+    branch_id INTEGER REFERENCES branches(id),
     created_at TEXT NOT NULL
 );
 
@@ -166,6 +174,7 @@ CREATE TABLE IF NOT EXISTS prizes (
     name TEXT NOT NULL,
     tier TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
+    branch_id INTEGER REFERENCES branches(id),
     created_at TEXT NOT NULL
 );
 
@@ -204,6 +213,13 @@ CREATE TABLE IF NOT EXISTS settings (
 
 # Postgres DDL
 PG_DDL = '''
+CREATE TABLE IF NOT EXISTS branches (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL UNIQUE,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS employees (
     id SERIAL PRIMARY KEY,
     employee_no TEXT NOT NULL UNIQUE,
@@ -213,6 +229,7 @@ CREATE TABLE IF NOT EXISTS employees (
     is_active INTEGER NOT NULL DEFAULT 1,
     has_drawn INTEGER NOT NULL DEFAULT 0,
     drawn_at TEXT,
+    branch_id INTEGER REFERENCES branches(id),
     created_at TEXT NOT NULL
 );
 
@@ -221,6 +238,7 @@ CREATE TABLE IF NOT EXISTS prizes (
     name TEXT NOT NULL,
     tier TEXT,
     is_active INTEGER NOT NULL DEFAULT 1,
+    branch_id INTEGER REFERENCES branches(id),
     created_at TEXT NOT NULL
 );
 
@@ -254,6 +272,19 @@ CREATE TABLE IF NOT EXISTS settings (
 '''
 
 
+def _has_column(cur, table, col):
+    """回傳指定表是否已有此欄位（跨 SQLite / Postgres）。"""
+    if IS_PG:
+        cur.execute(
+            "SELECT 1 FROM information_schema.columns "
+            "WHERE table_name = %s AND column_name = %s",
+            (table, col),
+        )
+        return cur.fetchone() is not None
+    cur.execute(f"PRAGMA table_info({table})")
+    return any(r['name'] == col for r in cur.fetchall())
+
+
 def init_db():
     raw = _connect_raw()
     cur = raw.cursor()
@@ -261,6 +292,13 @@ def init_db():
         cur.execute(PG_DDL)
     else:
         cur.executescript(SQLITE_DDL)
+
+    # 遷移：如果既有 DB 的 employees / prizes 還沒有 branch_id 欄位，補上
+    for table in ('employees', 'prizes'):
+        if not _has_column(cur, table, 'branch_id'):
+            cur.execute(
+                f'ALTER TABLE {table} ADD COLUMN branch_id INTEGER REFERENCES branches(id)'
+            )
 
     # 第一次啟動：建管理員
     cur.execute(_translate('SELECT COUNT(*) AS c FROM admins'))
@@ -270,6 +308,32 @@ def init_db():
         cur.execute(
             _translate('INSERT INTO admins(username, password_hash) VALUES (?, ?)'),
             (DEFAULT_ADMIN_USERNAME, generate_password_hash(DEFAULT_ADMIN_PASSWORD)),
+        )
+
+    # 遷移：如果 branches 表還沒任何紀錄，建一個「預設館」，把既有員工/獎品都掛過去
+    cur.execute(_translate('SELECT COUNT(*) AS c FROM branches'))
+    if cur.fetchone()['c'] == 0:
+        cur.execute(
+            _translate('INSERT INTO branches(name, is_active, created_at) VALUES (?, 1, ?)'),
+            ('預設館', now_str()),
+        )
+        cur.execute(_translate('SELECT id FROM branches WHERE name = ?'), ('預設館',))
+        default_branch_id = cur.fetchone()['id']
+        cur.execute(
+            _translate('UPDATE employees SET branch_id = ? WHERE branch_id IS NULL'),
+            (default_branch_id,),
+        )
+        cur.execute(
+            _translate('UPDATE prizes SET branch_id = ? WHERE branch_id IS NULL'),
+            (default_branch_id,),
+        )
+        # 把預設館設為目前活動館
+        cur.execute(
+            _translate(
+                'INSERT INTO settings(key, value) VALUES (?, ?) '
+                'ON CONFLICT (key) DO UPDATE SET value = excluded.value'
+            ),
+            ('active_branch_id', str(default_branch_id)),
         )
 
     # 預設 settings
@@ -303,6 +367,29 @@ def set_setting(key, value):
 
 def draw_is_open():
     return get_setting('draw_open', '1') == '1'
+
+
+def active_branch_id():
+    """目前活動館的 id；未設定回 None。"""
+    v = get_setting('active_branch_id', '')
+    try:
+        return int(v) if v else None
+    except (TypeError, ValueError):
+        return None
+
+
+def get_branch(bid):
+    if bid is None:
+        return None
+    return get_db().execute('SELECT * FROM branches WHERE id = ?', (bid,)).fetchone()
+
+
+def list_branches(only_active=False):
+    if only_active:
+        return get_db().execute(
+            'SELECT * FROM branches WHERE is_active = 1 ORDER BY id'
+        ).fetchall()
+    return get_db().execute('SELECT * FROM branches ORDER BY id').fetchall()
 
 
 def now_str():
@@ -344,10 +431,12 @@ def csrf_guard():
 
 @app.context_processor
 def inject_globals():
+    active_id = active_branch_id()
     return {
         'csrf_token': get_csrf_token(),
         'event_title': get_setting('event_title', '尾牙抽獎'),
         'draw_open': draw_is_open(),
+        'active_branch': get_branch(active_id) if active_id else None,
     }
 
 
@@ -461,11 +550,27 @@ def draw_page():
         ''',
         (emp['id'],),
     ).fetchone()
-    remaining_row = db.execute(
-        "SELECT COUNT(*) AS c FROM prize_units WHERE status = 'AVAILABLE'"
-    ).fetchone()
-    remaining = remaining_row['c']
-    return render_template('draw.html', employee=emp, record=record, remaining=remaining)
+
+    # 判定「本館活動」的狀態：目前啟用館 + 只算此館的獎品
+    ab_id = active_branch_id()
+    branch_mismatch = (ab_id is not None and emp['branch_id'] != ab_id)
+    emp_branch = get_branch(emp['branch_id']) if emp['branch_id'] else None
+
+    if ab_id is None:
+        remaining = 0
+    else:
+        remaining_row = db.execute(
+            "SELECT COUNT(*) AS c FROM prize_units pu "
+            "JOIN prizes p ON p.id = pu.prize_id "
+            "WHERE pu.status='AVAILABLE' AND p.is_active=1 AND p.branch_id = ?",
+            (ab_id,),
+        ).fetchone()
+        remaining = remaining_row['c']
+
+    return render_template(
+        'draw.html', employee=emp, record=record, remaining=remaining,
+        branch_mismatch=branch_mismatch, emp_branch=emp_branch,
+    )
 
 
 @app.route('/draw', methods=['POST'])
@@ -479,6 +584,14 @@ def do_draw():
         flash('抽獎尚未開放或已結束', 'error')
         return redirect(url_for('draw_page'))
 
+    ab_id = active_branch_id()
+    if ab_id is None:
+        flash('主辦人尚未指定活動館別，請洽現場工作人員', 'error')
+        return redirect(url_for('draw_page'))
+    if emp['branch_id'] != ab_id:
+        flash('本場活動不是您所屬館別的抽獎，請等待您館的場次', 'error')
+        return redirect(url_for('draw_page'))
+
     db = get_db()
     request_id = secrets.token_hex(16)
     try:
@@ -487,21 +600,23 @@ def do_draw():
         # 讀員工，Postgres 順便鎖 row
         if IS_PG:
             e = db.execute(
-                'SELECT id, has_drawn FROM employees '
+                'SELECT id, has_drawn, branch_id FROM employees '
                 'WHERE id = ? AND is_active = 1 FOR UPDATE',
                 (emp['id'],),
             ).fetchone()
         else:
             e = db.execute(
-                'SELECT id, has_drawn FROM employees WHERE id = ? AND is_active = 1',
+                'SELECT id, has_drawn, branch_id FROM employees WHERE id = ? AND is_active = 1',
                 (emp['id'],),
             ).fetchone()
         if not e:
             raise ValueError('員工不存在或已停用')
         if e['has_drawn']:
             raise ValueError('您已經抽過獎了')
+        if e['branch_id'] != ab_id:
+            raise ValueError('本場活動不是您所屬館別的抽獎')
 
-        # 挑一份可用獎品。Postgres 用 FOR UPDATE SKIP LOCKED 讓多人並發最有效率
+        # 挑一份可用獎品，只限本館的獎品
         if IS_PG:
             prize = db.execute(
                 '''
@@ -509,9 +624,11 @@ def do_draw():
                 FROM prize_units pu
                 JOIN prizes p ON p.id = pu.prize_id
                 WHERE pu.status = 'AVAILABLE' AND p.is_active = 1
+                  AND p.branch_id = ?
                 ORDER BY RANDOM() LIMIT 1
                 FOR UPDATE OF pu SKIP LOCKED
-                '''
+                ''',
+                (ab_id,),
             ).fetchone()
         else:
             prize = db.execute(
@@ -520,11 +637,13 @@ def do_draw():
                 FROM prize_units pu
                 JOIN prizes p ON p.id = pu.prize_id
                 WHERE pu.status = 'AVAILABLE' AND p.is_active = 1
+                  AND p.branch_id = ?
                 ORDER BY RANDOM() LIMIT 1
-                '''
+                ''',
+                (ab_id,),
             ).fetchone()
         if not prize:
-            raise ValueError('獎品已抽完，感謝參與')
+            raise ValueError('本館獎品已抽完，感謝參與')
 
         now = now_str()
         # 條件式 UPDATE：只在 status 仍是 AVAILABLE 時才更新（雙保險）
@@ -594,36 +713,98 @@ def admin_logout():
 @admin_required
 def admin_dashboard():
     db = get_db()
-    summary = {
-        'employee_total': db.execute('SELECT COUNT(*) AS c FROM employees WHERE is_active=1').fetchone()['c'],
-        'drawn_total': db.execute('SELECT COUNT(*) AS c FROM draws').fetchone()['c'],
-        'prize_total': db.execute('SELECT COUNT(*) AS c FROM prize_units').fetchone()['c'],
-        'remaining_total': db.execute("SELECT COUNT(*) AS c FROM prize_units WHERE status='AVAILABLE'").fetchone()['c'],
-    }
-    records = db.execute(
-        '''
-        SELECT e.employee_no, e.name, e.department,
-               d.drawn_at, p.name AS prize_name, p.tier AS prize_tier, pu.unit_code
-        FROM draws d
-        JOIN employees e ON e.id = d.employee_id
-        JOIN prize_units pu ON pu.id = d.prize_unit_id
-        JOIN prizes p ON p.id = pu.prize_id
-        ORDER BY d.drawn_at DESC
-        '''
-    ).fetchall()
-    inventory = db.execute(
-        '''
-        SELECT p.id, p.name, p.tier,
-               SUM(CASE WHEN pu.status='AVAILABLE' THEN 1 ELSE 0 END) AS remaining,
-               COUNT(*) AS total
-        FROM prize_units pu
-        JOIN prizes p ON p.id = pu.prize_id
-        GROUP BY p.id, p.name, p.tier
-        ORDER BY p.id
-        '''
-    ).fetchall()
-    return render_template('admin/dashboard.html',
-                           summary=summary, records=records, inventory=inventory)
+    show_all = request.args.get('all') == '1'
+    ab_id = active_branch_id()
+    filter_branch = (not show_all) and ab_id is not None
+
+    # Summary（依有無「顯示全部」而定）
+    if filter_branch:
+        summary = {
+            'employee_total': db.execute(
+                'SELECT COUNT(*) AS c FROM employees WHERE is_active=1 AND branch_id = ?',
+                (ab_id,),
+            ).fetchone()['c'],
+            'drawn_total': db.execute(
+                'SELECT COUNT(*) AS c FROM draws d '
+                'JOIN employees e ON e.id = d.employee_id WHERE e.branch_id = ?',
+                (ab_id,),
+            ).fetchone()['c'],
+            'prize_total': db.execute(
+                'SELECT COUNT(*) AS c FROM prize_units pu '
+                'JOIN prizes p ON p.id = pu.prize_id WHERE p.branch_id = ?',
+                (ab_id,),
+            ).fetchone()['c'],
+            'remaining_total': db.execute(
+                "SELECT COUNT(*) AS c FROM prize_units pu "
+                "JOIN prizes p ON p.id = pu.prize_id "
+                "WHERE pu.status='AVAILABLE' AND p.branch_id = ?",
+                (ab_id,),
+            ).fetchone()['c'],
+        }
+        records = db.execute(
+            '''
+            SELECT e.employee_no, e.name, e.department, b.name AS branch_name,
+                   d.drawn_at, p.name AS prize_name, p.tier AS prize_tier, pu.unit_code
+            FROM draws d
+            JOIN employees e ON e.id = d.employee_id
+            LEFT JOIN branches b ON b.id = e.branch_id
+            JOIN prize_units pu ON pu.id = d.prize_unit_id
+            JOIN prizes p ON p.id = pu.prize_id
+            WHERE e.branch_id = ?
+            ORDER BY d.drawn_at DESC
+            ''',
+            (ab_id,),
+        ).fetchall()
+        inventory = db.execute(
+            '''
+            SELECT p.id, p.name, p.tier, b.name AS branch_name,
+                   SUM(CASE WHEN pu.status='AVAILABLE' THEN 1 ELSE 0 END) AS remaining,
+                   COUNT(*) AS total
+            FROM prize_units pu
+            JOIN prizes p ON p.id = pu.prize_id
+            LEFT JOIN branches b ON b.id = p.branch_id
+            WHERE p.branch_id = ?
+            GROUP BY p.id, p.name, p.tier, b.name
+            ORDER BY p.id
+            ''',
+            (ab_id,),
+        ).fetchall()
+    else:
+        summary = {
+            'employee_total': db.execute('SELECT COUNT(*) AS c FROM employees WHERE is_active=1').fetchone()['c'],
+            'drawn_total': db.execute('SELECT COUNT(*) AS c FROM draws').fetchone()['c'],
+            'prize_total': db.execute('SELECT COUNT(*) AS c FROM prize_units').fetchone()['c'],
+            'remaining_total': db.execute("SELECT COUNT(*) AS c FROM prize_units WHERE status='AVAILABLE'").fetchone()['c'],
+        }
+        records = db.execute(
+            '''
+            SELECT e.employee_no, e.name, e.department, b.name AS branch_name,
+                   d.drawn_at, p.name AS prize_name, p.tier AS prize_tier, pu.unit_code
+            FROM draws d
+            JOIN employees e ON e.id = d.employee_id
+            LEFT JOIN branches b ON b.id = e.branch_id
+            JOIN prize_units pu ON pu.id = d.prize_unit_id
+            JOIN prizes p ON p.id = pu.prize_id
+            ORDER BY d.drawn_at DESC
+            '''
+        ).fetchall()
+        inventory = db.execute(
+            '''
+            SELECT p.id, p.name, p.tier, b.name AS branch_name,
+                   SUM(CASE WHEN pu.status='AVAILABLE' THEN 1 ELSE 0 END) AS remaining,
+                   COUNT(*) AS total
+            FROM prize_units pu
+            JOIN prizes p ON p.id = pu.prize_id
+            LEFT JOIN branches b ON b.id = p.branch_id
+            GROUP BY p.id, p.name, p.tier, b.name
+            ORDER BY p.id
+            '''
+        ).fetchall()
+    return render_template(
+        'admin/dashboard.html',
+        summary=summary, records=records, inventory=inventory,
+        show_all=show_all, filter_branch=filter_branch,
+    )
 
 
 # ============================================================================
@@ -633,10 +814,17 @@ def admin_dashboard():
 @app.route('/admin/employees')
 @admin_required
 def admin_employees():
+    branches = list_branches()
     emps = get_db().execute(
-        'SELECT * FROM employees ORDER BY is_active DESC, employee_no'
+        '''
+        SELECT e.*, b.name AS branch_name
+        FROM employees e
+        LEFT JOIN branches b ON b.id = e.branch_id
+        ORDER BY e.is_active DESC, e.branch_id, e.employee_no
+        '''
     ).fetchall()
-    return render_template('admin/employees.html', employees=emps)
+    return render_template('admin/employees.html', employees=emps, branches=branches,
+                           active_branch_id=active_branch_id())
 
 
 @app.route('/admin/employees/new', methods=['POST'])
@@ -646,15 +834,20 @@ def admin_employee_new():
     name = request.form.get('name', '').strip()
     department = request.form.get('department', '').strip()
     password = request.form.get('password', '').strip()
+    branch_id = to_int(request.form.get('branch_id', ''), 0) or None
     if not employee_no or not name or not password:
         flash('工號、姓名、密碼皆必填', 'error')
+        return redirect(url_for('admin_employees'))
+    if not branch_id:
+        flash('請選擇館別', 'error')
         return redirect(url_for('admin_employees'))
     db = get_db()
     try:
         db.execute(
-            'INSERT INTO employees(employee_no, name, department, password_hash, created_at) '
-            'VALUES (?, ?, ?, ?, ?)',
-            (employee_no, name, department, generate_password_hash(password), now_str()),
+            'INSERT INTO employees(employee_no, name, department, password_hash, branch_id, created_at) '
+            'VALUES (?, ?, ?, ?, ?, ?)',
+            (employee_no, name, department, generate_password_hash(password),
+             branch_id, now_str()),
         )
         db.commit()
         flash(f'已新增：{name}（{employee_no}）', 'success')
@@ -670,10 +863,14 @@ def admin_employee_new():
 @app.route('/admin/employees/bulk', methods=['POST'])
 @admin_required
 def admin_employee_bulk():
-    """一次貼一段 CSV：工號,姓名,部門,密碼"""
+    """一次貼一段 CSV：工號,姓名,部門,密碼（附加：預設館別由表單選定）"""
     raw = request.form.get('csv_data', '').strip()
+    branch_id = to_int(request.form.get('branch_id', ''), 0) or None
     if not raw:
         flash('請貼上 CSV 資料', 'error')
+        return redirect(url_for('admin_employees'))
+    if not branch_id:
+        flash('請選擇要匯入到哪一館', 'error')
         return redirect(url_for('admin_employees'))
     ok, dup, bad = 0, 0, 0
     db = get_db()
@@ -691,9 +888,10 @@ def admin_employee_bulk():
             continue
         try:
             db.execute(
-                'INSERT INTO employees(employee_no, name, department, password_hash, created_at) '
-                'VALUES (?, ?, ?, ?, ?)',
-                (employee_no, name, department, generate_password_hash(password), now_str()),
+                'INSERT INTO employees(employee_no, name, department, password_hash, branch_id, created_at) '
+                'VALUES (?, ?, ?, ?, ?, ?)',
+                (employee_no, name, department, generate_password_hash(password),
+                 branch_id, now_str()),
             )
             db.commit()
             ok += 1
@@ -714,19 +912,23 @@ def admin_employee_edit(emp_id):
     name = request.form.get('name', '').strip()
     department = request.form.get('department', '').strip()
     password = request.form.get('password', '').strip()
+    branch_id = to_int(request.form.get('branch_id', ''), 0) or None
     if not name:
         flash('姓名必填', 'error')
+        return redirect(url_for('admin_employees'))
+    if not branch_id:
+        flash('請選擇館別', 'error')
         return redirect(url_for('admin_employees'))
     db = get_db()
     if password:
         db.execute(
-            'UPDATE employees SET name=?, department=?, password_hash=? WHERE id=?',
-            (name, department, generate_password_hash(password), emp_id),
+            'UPDATE employees SET name=?, department=?, branch_id=?, password_hash=? WHERE id=?',
+            (name, department, branch_id, generate_password_hash(password), emp_id),
         )
     else:
         db.execute(
-            'UPDATE employees SET name=?, department=? WHERE id=?',
-            (name, department, emp_id),
+            'UPDATE employees SET name=?, department=?, branch_id=? WHERE id=?',
+            (name, department, branch_id, emp_id),
         )
     db.commit()
     flash('已更新', 'success')
@@ -751,17 +953,21 @@ def admin_employee_toggle(emp_id):
 @app.route('/admin/prizes')
 @admin_required
 def admin_prizes():
+    branches = list_branches()
     prizes = get_db().execute(
         '''
-        SELECT p.id, p.name, p.tier, p.is_active, p.created_at,
+        SELECT p.id, p.name, p.tier, p.is_active, p.created_at, p.branch_id,
+               b.name AS branch_name,
                (SELECT COUNT(*) FROM prize_units pu WHERE pu.prize_id = p.id) AS total,
                (SELECT COUNT(*) FROM prize_units pu
                  WHERE pu.prize_id = p.id AND pu.status = 'AVAILABLE') AS remaining
         FROM prizes p
-        ORDER BY p.id
+        LEFT JOIN branches b ON b.id = p.branch_id
+        ORDER BY p.branch_id, p.id
         '''
     ).fetchall()
-    return render_template('admin/prizes.html', prizes=prizes)
+    return render_template('admin/prizes.html', prizes=prizes, branches=branches,
+                           active_branch_id=active_branch_id())
 
 
 @app.route('/admin/prizes/new', methods=['POST'])
@@ -770,20 +976,24 @@ def admin_prize_new():
     name = request.form.get('name', '').strip()
     tier = request.form.get('tier', '').strip() or '普獎'
     quantity = max(1, to_int(request.form.get('quantity', '1'), 1))
+    branch_id = to_int(request.form.get('branch_id', ''), 0) or None
     if not name:
         flash('獎項名稱必填', 'error')
+        return redirect(url_for('admin_prizes'))
+    if not branch_id:
+        flash('請選擇館別', 'error')
         return redirect(url_for('admin_prizes'))
     db = get_db()
     if IS_PG:
         cur = db.execute(
-            'INSERT INTO prizes(name, tier, created_at) VALUES (?, ?, ?) RETURNING id',
-            (name, tier, now_str()),
+            'INSERT INTO prizes(name, tier, branch_id, created_at) VALUES (?, ?, ?, ?) RETURNING id',
+            (name, tier, branch_id, now_str()),
         )
         prize_id = cur.fetchone()['id']
     else:
         cur = db.execute(
-            'INSERT INTO prizes(name, tier, created_at) VALUES (?, ?, ?)',
-            (name, tier, now_str()),
+            'INSERT INTO prizes(name, tier, branch_id, created_at) VALUES (?, ?, ?, ?)',
+            (name, tier, branch_id, now_str()),
         )
         prize_id = cur.lastrowid
 
@@ -803,13 +1013,17 @@ def admin_prize_new():
 def admin_prize_edit(prize_id):
     name = request.form.get('name', '').strip()
     tier = request.form.get('tier', '').strip() or '普獎'
+    branch_id = to_int(request.form.get('branch_id', ''), 0) or None
     if not name:
         flash('獎項名稱必填', 'error')
         return redirect(url_for('admin_prizes'))
+    if not branch_id:
+        flash('請選擇館別', 'error')
+        return redirect(url_for('admin_prizes'))
     db = get_db()
     db.execute(
-        'UPDATE prizes SET name=?, tier=? WHERE id=?',
-        (name, tier, prize_id),
+        'UPDATE prizes SET name=?, tier=?, branch_id=? WHERE id=?',
+        (name, tier, branch_id, prize_id),
     )
     db.commit()
     flash('已更新', 'success')
@@ -871,7 +1085,22 @@ def admin_prize_delete(prize_id):
 @app.route('/admin/settings', methods=['GET'])
 @admin_required
 def admin_settings():
-    return render_template('admin/settings.html')
+    return render_template('admin/settings.html',
+                           branches=list_branches(),
+                           active_branch_id=active_branch_id())
+
+
+@app.route('/admin/settings/set_active_branch', methods=['POST'])
+@admin_required
+def admin_set_active_branch():
+    bid = to_int(request.form.get('branch_id', ''), 0) or None
+    if bid is None or not get_branch(bid):
+        flash('請選擇館別', 'error')
+        return redirect(url_for('admin_settings'))
+    set_setting('active_branch_id', str(bid))
+    branch = get_branch(bid)
+    flash(f'目前活動館別已切換為：{branch["name"]}', 'success')
+    return redirect(url_for('admin_settings'))
 
 
 @app.route('/admin/settings/toggle_draw', methods=['POST'])
@@ -895,23 +1124,144 @@ def admin_set_event_title():
 @admin_required
 def admin_reset():
     confirm = request.form.get('confirm', '')
+    scope = request.form.get('scope', 'active')  # 'active' 或 'all'
     if confirm != 'RESET':
         flash('請於欄位輸入 RESET 確認', 'error')
         return redirect(url_for('admin_settings'))
     db = get_db()
     try:
         db.begin()
-        db.execute('DELETE FROM draws')
-        db.execute(
-            "UPDATE prize_units SET status='AVAILABLE', assigned_employee_id=NULL, assigned_at=NULL"
-        )
-        db.execute('UPDATE employees SET has_drawn=0, drawn_at=NULL')
+        if scope == 'all':
+            db.execute('DELETE FROM draws')
+            db.execute(
+                "UPDATE prize_units SET status='AVAILABLE', assigned_employee_id=NULL, assigned_at=NULL"
+            )
+            db.execute('UPDATE employees SET has_drawn=0, drawn_at=NULL')
+            msg = '已重置全部館別的抽獎紀錄'
+        else:
+            ab_id = active_branch_id()
+            if ab_id is None:
+                raise ValueError('請先在下方指定目前活動館別再重置')
+            # 只刪本館的 draws
+            db.execute(
+                'DELETE FROM draws WHERE employee_id IN '
+                '(SELECT id FROM employees WHERE branch_id = ?)',
+                (ab_id,),
+            )
+            # 只把本館的 prize_units 復原
+            db.execute(
+                "UPDATE prize_units SET status='AVAILABLE', "
+                "assigned_employee_id=NULL, assigned_at=NULL "
+                "WHERE prize_id IN (SELECT id FROM prizes WHERE branch_id = ?)",
+                (ab_id,),
+            )
+            db.execute(
+                'UPDATE employees SET has_drawn=0, drawn_at=NULL WHERE branch_id = ?',
+                (ab_id,),
+            )
+            branch = get_branch(ab_id)
+            msg = f'已重置「{branch["name"] if branch else "本館"}」的抽獎紀錄'
         db.commit()
-        flash('已重置所有抽獎紀錄', 'success')
+        flash(msg, 'success')
     except Exception as ex:
         db.rollback()
         flash(f'重置失敗：{ex}', 'error')
     return redirect(url_for('admin_settings'))
+
+
+# ============================================================================
+# 館別 CRUD
+# ============================================================================
+
+@app.route('/admin/branches')
+@admin_required
+def admin_branches():
+    branches = get_db().execute(
+        '''
+        SELECT b.*,
+               (SELECT COUNT(*) FROM employees e WHERE e.branch_id = b.id) AS emp_count,
+               (SELECT COUNT(*) FROM prizes p WHERE p.branch_id = b.id) AS prize_count
+        FROM branches b
+        ORDER BY b.id
+        '''
+    ).fetchall()
+    return render_template('admin/branches.html', branches=branches,
+                           active_branch_id=active_branch_id())
+
+
+@app.route('/admin/branches/new', methods=['POST'])
+@admin_required
+def admin_branch_new():
+    name = request.form.get('name', '').strip()
+    if not name:
+        flash('館別名稱必填', 'error')
+        return redirect(url_for('admin_branches'))
+    db = get_db()
+    try:
+        db.execute(
+            'INSERT INTO branches(name, is_active, created_at) VALUES (?, 1, ?)',
+            (name, now_str()),
+        )
+        db.commit()
+        flash(f'已新增館別：{name}', 'success')
+    except Exception as e:
+        db.rollback()
+        if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
+            flash(f'館別「{name}」已存在', 'error')
+        else:
+            flash(f'新增失敗：{e}', 'error')
+    return redirect(url_for('admin_branches'))
+
+
+@app.route('/admin/branches/<int:bid>/edit', methods=['POST'])
+@admin_required
+def admin_branch_edit(bid):
+    name = request.form.get('name', '').strip()
+    if not name:
+        flash('館別名稱必填', 'error')
+        return redirect(url_for('admin_branches'))
+    db = get_db()
+    try:
+        db.execute('UPDATE branches SET name=? WHERE id=?', (name, bid))
+        db.commit()
+        flash('已更新館別名稱', 'success')
+    except Exception as e:
+        db.rollback()
+        flash(f'更新失敗：{e}', 'error')
+    return redirect(url_for('admin_branches'))
+
+
+@app.route('/admin/branches/<int:bid>/activate', methods=['POST'])
+@admin_required
+def admin_branch_activate(bid):
+    branch = get_branch(bid)
+    if not branch:
+        flash('找不到此館別', 'error')
+        return redirect(url_for('admin_branches'))
+    set_setting('active_branch_id', str(bid))
+    flash(f'目前活動館別已切換為：{branch["name"]}', 'success')
+    return redirect(url_for('admin_branches'))
+
+
+@app.route('/admin/branches/<int:bid>/delete', methods=['POST'])
+@admin_required
+def admin_branch_delete(bid):
+    db = get_db()
+    emp_count = db.execute(
+        'SELECT COUNT(*) AS c FROM employees WHERE branch_id = ?', (bid,)
+    ).fetchone()['c']
+    prize_count = db.execute(
+        'SELECT COUNT(*) AS c FROM prizes WHERE branch_id = ?', (bid,)
+    ).fetchone()['c']
+    if emp_count or prize_count:
+        flash(f'此館別還有 {emp_count} 位員工、{prize_count} 個獎項，請先移除或改館別再刪', 'error')
+        return redirect(url_for('admin_branches'))
+    if active_branch_id() == bid:
+        set_setting('active_branch_id', '')
+    db.execute('DELETE FROM branches WHERE id = ?', (bid,))
+    db.commit()
+    flash('已刪除館別', 'success')
+    return redirect(url_for('admin_branches'))
 
 
 @app.route('/admin/settings/change_password', methods=['POST'])

@@ -9,16 +9,32 @@
   <a href="{{ url_for('admin_dashboard') }}">總覽</a>
   <a href="{{ url_for('admin_employees') }}">員工</a>
   <a class="active" href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a href="{{ url_for('admin_branches') }}">館別</a>
   <a href="{{ url_for('admin_settings') }}">設定</a>
   <a href="{{ url_for('admin_qrcode') }}">QR Code</a>
 </div>
 
+{% if not branches %}
+  <div class="card" style="background:#fee2e2;">
+    <strong>還沒建館別。請先到 <a href="{{ url_for('admin_branches') }}">館別管理</a> 新增館別再回來加獎品。</strong>
+  </div>
+{% else %}
+
 <div class="card">
   <h2 class="title">新增獎項</h2>
-  <p class="muted">新增後系統會自動產生對應數量的獎品編號，每個編號只會被抽走一次。</p>
+  <p class="muted">新增後系統會自動產生對應數量的獎品編號，每個編號只會被抽走一次。獎品綁館別 → 只有本館員工能抽到本館獎品。</p>
   <form method="post" action="{{ url_for('admin_prize_new') }}" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <div class="row">
+      <div style="flex:1;min-width:120px;">
+        <label>館別 *</label>
+        <select name="branch_id" required>
+          <option value="">-- 請選 --</option>
+          {% for b in branches %}
+            <option value="{{ b['id'] }}" {% if b['id'] == active_branch_id %}selected{% endif %}>{{ b['name'] }}</option>
+          {% endfor %}
+        </select>
+      </div>
       <div style="flex:2;min-width:160px;">
         <label>獎項名稱 *</label>
         <input name="name" required placeholder="例如：iPad mini">
@@ -36,17 +52,20 @@
   </form>
 </div>
 
+{% endif %}
+
 <div class="card">
   <h2 class="title">獎品清單（共 {{ prizes|length }} 項）</h2>
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>狀態</th><th>獎項</th><th>等級</th><th>剩餘 / 總數</th><th>操作</th></tr>
+        <tr><th>狀態</th><th>館別</th><th>獎項</th><th>等級</th><th>剩餘 / 總數</th><th>操作</th></tr>
       </thead>
       <tbody>
         {% for p in prizes %}
           <tr class="{{ '' if p['is_active'] else 'inactive' }}">
             <td>{{ '啟用' if p['is_active'] else '停用' }}</td>
+            <td>{{ p['branch_name'] or '—' }}</td>
             <td>{{ p['name'] }}</td>
             <td>{{ p['tier'] or '-' }}</td>
             <td><strong>{{ p['remaining'] }}</strong> / {{ p['total'] }}</td>
@@ -55,6 +74,12 @@
                 <summary style="cursor:pointer;color:#2563eb;">編輯</summary>
                 <form method="post" action="{{ url_for('admin_prize_edit', prize_id=p['id']) }}" style="margin-top:8px;">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <label style="font-size:12px;">館別</label>
+                  <select name="branch_id" required>
+                    {% for b in branches %}
+                      <option value="{{ b['id'] }}" {% if b['id'] == p['branch_id'] %}selected{% endif %}>{{ b['name'] }}</option>
+                    {% endfor %}
+                  </select>
                   <input name="name" value="{{ p['name'] }}" required>
                   <input name="tier" value="{{ p['tier'] or '' }}" placeholder="等級">
                   <button class="btn" type="submit" style="margin-top:8px;">儲存</button>
@@ -81,7 +106,7 @@
             </td>
           </tr>
         {% else %}
-          <tr><td colspan="5" class="muted">尚未設定獎品</td></tr>
+          <tr><td colspan="6" class="muted">尚未設定獎品</td></tr>
         {% endfor %}
       </tbody>
     </table>

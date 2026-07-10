@@ -1,0 +1,82 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row" style="justify-content:space-between;">
+  <h1 class="title">館別管理</h1>
+  <a class="btn secondary" href="{{ url_for('admin_logout') }}">登出</a>
+</div>
+
+<div class="nav">
+  <a href="{{ url_for('admin_dashboard') }}">總覽</a>
+  <a href="{{ url_for('admin_employees') }}">員工</a>
+  <a href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a class="active" href="{{ url_for('admin_branches') }}">館別</a>
+  <a href="{{ url_for('admin_settings') }}">設定</a>
+  <a href="{{ url_for('admin_qrcode') }}">QR Code</a>
+</div>
+
+<div class="card">
+  <h2 class="title">新增館別</h2>
+  <p class="muted">例如：A 館、B 館、大西門、俞旅。名字自由取。</p>
+  <form method="post" action="{{ url_for('admin_branch_new') }}" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>館別名稱 *</label>
+    <input name="name" required placeholder="例如：A 館">
+    <button class="btn" type="submit" style="margin-top:12px;">新增</button>
+  </form>
+</div>
+
+<div class="card">
+  <h2 class="title">館別清單（共 {{ branches|length }} 館）</h2>
+  <p class="muted">
+    「目前活動館」是指這一場尾牙讓誰進來抽。切到 A 館 → 只有 A 館員工能抽 A 館的獎品。
+  </p>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr><th>目前活動</th><th>館別</th><th>員工數</th><th>獎項數</th><th>操作</th></tr>
+      </thead>
+      <tbody>
+        {% for b in branches %}
+          <tr class="{{ '' if b['is_active'] else 'inactive' }}">
+            <td>
+              {% if active_branch_id == b['id'] %}
+                <strong style="color:#16a34a;">✅ 進行中</strong>
+              {% else %}
+                <span class="muted">－</span>
+              {% endif %}
+            </td>
+            <td><strong>{{ b['name'] }}</strong></td>
+            <td>{{ b['emp_count'] }}</td>
+            <td>{{ b['prize_count'] }}</td>
+            <td>
+              {% if active_branch_id != b['id'] %}
+                <form method="post" action="{{ url_for('admin_branch_activate', bid=b['id']) }}"
+                      onsubmit="return confirm('把「{{ b['name'] }}」設為目前活動館別？')">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button class="btn success" type="submit">設為進行中</button>
+                </form>
+              {% endif %}
+              <details style="margin-top:6px;">
+                <summary style="cursor:pointer;color:#2563eb;">重新命名</summary>
+                <form method="post" action="{{ url_for('admin_branch_edit', bid=b['id']) }}" style="margin-top:8px;">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <input name="name" value="{{ b['name'] }}" required>
+                  <button class="btn" type="submit" style="margin-top:8px;">儲存</button>
+                </form>
+              </details>
+              <form method="post" action="{{ url_for('admin_branch_delete', bid=b['id']) }}"
+                    style="margin-top:6px;"
+                    onsubmit="return confirm('確定刪除「{{ b['name'] }}」？（有員工或獎品時無法刪）')">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                <button class="btn danger" type="submit">刪除</button>
+              </form>
+            </td>
+          </tr>
+        {% else %}
+          <tr><td colspan="5" class="muted">尚未新增館別</td></tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+{% endblock %}

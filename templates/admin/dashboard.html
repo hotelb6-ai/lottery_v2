@@ -3,7 +3,14 @@
 <div class="row" style="justify-content:space-between;">
   <div>
     <h1 class="title">後台總覽</h1>
-    <p class="subtitle">{{ event_title }}｜狀態：{{ '開放中' if draw_open else '已暫停' }}</p>
+    <p class="subtitle">
+      {{ event_title }}｜狀態：{{ '開放中' if draw_open else '已暫停' }}
+      {% if active_branch %}
+        ｜目前活動館：<strong>{{ active_branch['name'] }}</strong>
+      {% else %}
+        ｜<strong style="color:#dc2626;">尚未指定活動館</strong>
+      {% endif %}
+    </p>
   </div>
   <a class="btn secondary" href="{{ url_for('admin_logout') }}">登出</a>
 </div>
@@ -12,8 +19,25 @@
   <a class="active" href="{{ url_for('admin_dashboard') }}">總覽</a>
   <a href="{{ url_for('admin_employees') }}">員工</a>
   <a href="{{ url_for('admin_prizes') }}">獎品</a>
+  <a href="{{ url_for('admin_branches') }}">館別</a>
   <a href="{{ url_for('admin_settings') }}">設定</a>
   <a href="{{ url_for('admin_qrcode') }}">QR Code</a>
+</div>
+
+<div class="card" style="background:#f0f9ff;">
+  {% if filter_branch %}
+    <p style="margin:0;">
+      🔍 目前只顯示<strong>「{{ active_branch['name'] }}」</strong>的資料。
+      <a href="{{ url_for('admin_dashboard', all=1) }}">顯示全部館別 →</a>
+    </p>
+  {% else %}
+    <p style="margin:0;">
+      🌐 目前顯示<strong>全部館別</strong>的資料。
+      {% if active_branch %}
+        <a href="{{ url_for('admin_dashboard') }}">只看「{{ active_branch['name'] }}」→</a>
+      {% endif %}
+    </p>
+  {% endif %}
 </div>
 
 <div class="grid">
@@ -31,18 +55,19 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>獎項</th><th>等級</th><th>剩餘</th><th>總數</th></tr>
+        <tr><th>館別</th><th>獎項</th><th>等級</th><th>剩餘</th><th>總數</th></tr>
       </thead>
       <tbody>
         {% for row in inventory %}
           <tr>
+            <td>{{ row['branch_name'] or '—' }}</td>
             <td>{{ row['name'] }}</td>
             <td>{{ row['tier'] or '-' }}</td>
             <td><strong>{{ row['remaining'] }}</strong></td>
             <td>{{ row['total'] }}</td>
           </tr>
         {% else %}
-          <tr><td colspan="4" class="muted">尚未設定獎品</td></tr>
+          <tr><td colspan="5" class="muted">尚未設定獎品</td></tr>
         {% endfor %}
       </tbody>
     </table>
@@ -57,11 +82,12 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>工號</th><th>姓名</th><th>部門</th><th>獎項</th><th>編號</th><th>時間</th></tr>
+        <tr><th>館別</th><th>工號</th><th>姓名</th><th>部門</th><th>獎項</th><th>編號</th><th>時間</th></tr>
       </thead>
       <tbody>
         {% for r in records %}
           <tr>
+            <td>{{ r['branch_name'] or '—' }}</td>
             <td>{{ r['employee_no'] }}</td>
             <td>{{ r['name'] }}</td>
             <td>{{ r['department'] or '-' }}</td>
@@ -70,7 +96,7 @@
             <td>{{ r['drawn_at'] }}</td>
           </tr>
         {% else %}
-          <tr><td colspan="6" class="muted">目前尚無抽獎紀錄</td></tr>
+          <tr><td colspan="7" class="muted">目前尚無抽獎紀錄</td></tr>
         {% endfor %}
       </tbody>
     </table>
