@@ -396,6 +396,28 @@ def now_str():
     return datetime.now().isoformat(timespec='seconds')
 
 
+# 依「等級」文字判定獎項優先順序（數字越小 = 越大獎）
+# 未列出的等級一律歸為中段 50；普獎/安慰獎/參加獎歸尾段
+TIER_PRIORITY_SQL = """CASE
+    WHEN p.tier IN ('特獎','特別獎','大獎') THEN 1
+    WHEN p.tier IN ('頭獎','超級大獎') THEN 2
+    WHEN p.tier IN ('一獎','一等獎','壹獎') THEN 3
+    WHEN p.tier IN ('二獎','二等獎','貳獎') THEN 4
+    WHEN p.tier IN ('三獎','三等獎','參獎','叁獎') THEN 5
+    WHEN p.tier IN ('四獎','四等獎') THEN 6
+    WHEN p.tier IN ('五獎','五等獎') THEN 7
+    WHEN p.tier IN ('六獎','六等獎') THEN 8
+    WHEN p.tier IN ('七獎','七等獎') THEN 9
+    WHEN p.tier IN ('八獎','八等獎') THEN 10
+    WHEN p.tier IN ('九獎','九等獎') THEN 11
+    WHEN p.tier IN ('十獎','十等獎') THEN 12
+    WHEN p.tier IN ('普獎','普通獎','一般獎') THEN 90
+    WHEN p.tier IN ('安慰獎') THEN 95
+    WHEN p.tier IN ('參加獎','紀念獎') THEN 96
+    ELSE 50
+END"""
+
+
 def to_int(v, default=0):
     try:
         return int(v)
@@ -1085,9 +1107,42 @@ def admin_prize_delete(prize_id):
 @app.route('/admin/settings', methods=['GET'])
 @admin_required
 def admin_settings():
+    ab_id = active_branch_id()
+    pool_stats = None
+    pool_breakdown = None
+    if ab_id is not None:
+        db = get_db()
+        r = db.execute(
+            "SELECT "
+            "SUM(CASE WHEN pu.status='AVAILABLE' THEN 1 ELSE 0 END) AS avail, "
+            "SUM(CASE WHEN pu.status='ASSIGNED'  THEN 1 ELSE 0 END) AS assigned, "
+            "SUM(CASE WHEN pu.status='EXCLUDED'  THEN 1 ELSE 0 END) AS excluded, "
+            "COUNT(*) AS total "
+            "FROM prize_units pu JOIN prizes p ON p.id = pu.prize_id "
+            "WHERE p.branch_id = ?",
+            (ab_id,),
+        ).fetchone()
+        pool_stats = dict(r) if r else None
+        pool_breakdown = db.execute(
+            f"""
+            SELECT p.tier,
+                   SUM(CASE WHEN pu.status='AVAILABLE' THEN 1 ELSE 0 END) AS avail,
+                   SUM(CASE WHEN pu.status='ASSIGNED'  THEN 1 ELSE 0 END) AS assigned,
+                   SUM(CASE WHEN pu.status='EXCLUDED'  THEN 1 ELSE 0 END) AS excluded
+            FROM prize_units pu
+            JOIN prizes p ON p.id = pu.prize_id
+            WHERE p.branch_id = ?
+            GROUP BY p.tier, {TIER_PRIORITY_SQL}
+            ORDER BY {TIER_PRIORITY_SQL}
+            """,
+            (ab_id,),
+        ).fetchall()
     return render_template('admin/settings.html',
                            branches=list_branches(),
-                           active_branch_id=active_branch_id())
+                           active_branch_id=ab_id,
+                           pool_stats=pool_stats,
+                           pool_breakdown=pool_breakdown,
+                           event_pool_size=get_setting('event_pool_size', ''))
 
 
 @app.route('/admin/settings/set_active_branch', methods=['POST'])
@@ -1133,8 +1188,10 @@ def admin_reset():
         db.begin()
         if scope == 'all':
             db.execute('DELETE FROM draws')
+            # 全部歸零：ASSIGNED / EXCLUDED 都回 AVAILABLE
             db.execute(
-                "UPDATE prize_units SET status='AVAILABLE', assigned_employee_id=NULL, assigned_at=NULL"
+                "UPDATE prize_units SET status='AVAILABLE', "
+                "assigned_employee_id=NULL, assigned_at=NULL"
             )
             db.execute('UPDATE employees SET has_drawn=0, drawn_at=NULL')
             msg = '已重置全部館別的抽獎紀錄'
@@ -1148,7 +1205,7 @@ def admin_reset():
                 '(SELECT id FROM employees WHERE branch_id = ?)',
                 (ab_id,),
             )
-            # 只把本館的 prize_units 復原
+            # 只把本館的 prize_units 復原（ASSIGNED + EXCLUDED 一起還原）
             db.execute(
                 "UPDATE prize_units SET status='AVAILABLE', "
                 "assigned_employee_id=NULL, assigned_at=NULL "
@@ -1262,6 +1319,115 @@ def admin_branch_delete(bid):
     db.commit()
     flash('已刪除館別', 'success')
     return redirect(url_for('admin_branches'))
+
+
+@app.route('/admin/settings/apply_pool', methods=['POST'])
+@admin_required
+def admin_apply_pool():
+    """自動配比本場獎品池：從本館所有 AVAILABLE + EXCLUDED 的獎品單元中，
+    依 tier 大小取前 N 份，其餘設為 EXCLUDED；已 ASSIGNED 的不動。"""
+    ab_id = active_branch_id()
+    if ab_id is None:
+        flash('請先指定目前活動館別再配比', 'error')
+        return redirect(url_for('admin_settings'))
+    n = to_int(request.form.get('pool_size', ''), 0)
+    if n <= 0:
+        flash('請輸入正整數的參加人數', 'error')
+        return redirect(url_for('admin_settings'))
+
+    db = get_db()
+    try:
+        db.begin()
+        # 已 ASSIGNED 的不動；只操作本館 AVAILABLE + EXCLUDED
+        # Step 1：先全部設回 AVAILABLE（重置本館未派發的池）
+        db.execute(
+            "UPDATE prize_units SET status='AVAILABLE' "
+            "WHERE status IN ('AVAILABLE','EXCLUDED') "
+            "AND prize_id IN (SELECT id FROM prizes WHERE branch_id = ?)",
+            (ab_id,),
+        )
+        # Step 2：算已 ASSIGNED 幾份 → 需要再挑 (n - assigned) 份進池
+        assigned = db.execute(
+            "SELECT COUNT(*) AS c FROM prize_units pu "
+            "JOIN prizes p ON p.id = pu.prize_id "
+            "WHERE pu.status='ASSIGNED' AND p.branch_id = ?",
+            (ab_id,),
+        ).fetchone()['c']
+        need = n - assigned
+        if need < 0:
+            # 已抽的比 N 還多，代表 N 設太小，還原後直接返回
+            db.commit()
+            flash(f'目前已抽走 {assigned} 份，超過您輸入的 {n} 份，請設更大的人數', 'error')
+            return redirect(url_for('admin_settings'))
+
+        # Step 3：從 AVAILABLE 中挑前 need 份「大到小、同級隨機」，其餘設 EXCLUDED
+        # 我們挑「要保留在池裡」的 ID，其他 AVAILABLE 就是要 EXCLUDED
+        keep_ids = [r['id'] for r in db.execute(
+            f"""
+            SELECT pu.id
+            FROM prize_units pu
+            JOIN prizes p ON p.id = pu.prize_id
+            WHERE pu.status='AVAILABLE' AND p.branch_id = ? AND p.is_active = 1
+            ORDER BY {TIER_PRIORITY_SQL} ASC, RANDOM()
+            LIMIT ?
+            """,
+            (ab_id, need),
+        ).fetchall()]
+
+        if need > 0 and len(keep_ids) < need:
+            # 獎品不夠：全部 AVAILABLE 都留下，flash 警告
+            short = need - len(keep_ids)
+            db.commit()
+            flash(
+                f'本館獎品不夠！只湊到 {assigned + len(keep_ids)} 份，比 {n} 少 {short} 份。'
+                '請到「獎品」再加獎項再配比。',
+                'error',
+            )
+            return redirect(url_for('admin_settings'))
+
+        # Step 4：不在 keep_ids 內的 AVAILABLE 都 EXCLUDED
+        if keep_ids:
+            placeholders = ','.join(['?'] * len(keep_ids))
+            db.execute(
+                f"UPDATE prize_units SET status='EXCLUDED' "
+                f"WHERE status='AVAILABLE' "
+                f"AND prize_id IN (SELECT id FROM prizes WHERE branch_id = ?) "
+                f"AND id NOT IN ({placeholders})",
+                (ab_id, *keep_ids),
+            )
+        else:
+            # need == 0：全部本館未派發的都 EXCLUDED（因為 assigned 已 >= n）
+            db.execute(
+                "UPDATE prize_units SET status='EXCLUDED' "
+                "WHERE status='AVAILABLE' "
+                "AND prize_id IN (SELECT id FROM prizes WHERE branch_id = ?)",
+                (ab_id,),
+            )
+
+        # Step 5：組出摘要文字（分等級統計本場獎品池 = ASSIGNED + AVAILABLE）
+        breakdown = db.execute(
+            f"""
+            SELECT p.tier, COUNT(*) AS c
+            FROM prize_units pu
+            JOIN prizes p ON p.id = pu.prize_id
+            WHERE p.branch_id = ? AND pu.status IN ('AVAILABLE','ASSIGNED')
+            GROUP BY p.tier, {TIER_PRIORITY_SQL}
+            ORDER BY {TIER_PRIORITY_SQL}
+            """,
+            (ab_id,),
+        ).fetchall()
+        summary = '、'.join(f"{r['tier'] or '（未分級）'} x{r['c']}" for r in breakdown)
+        db.commit()
+        set_setting('event_pool_size', str(n))
+        branch = get_branch(ab_id)
+        flash(
+            f'✅「{branch["name"]}」本場獎品池已配好（{n} 份）：{summary}',
+            'success',
+        )
+    except Exception as ex:
+        db.rollback()
+        flash(f'配比失敗：{ex}', 'error')
+    return redirect(url_for('admin_settings'))
 
 
 @app.route('/admin/settings/change_password', methods=['POST'])

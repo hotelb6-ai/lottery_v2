@@ -38,6 +38,72 @@
   {% endif %}
 </div>
 
+<div class="card" style="border:2px solid #f59e0b;">
+  <h2 class="title">🎁 本場獎品池自動配比</h2>
+  <p class="muted">
+    先在「獎品」把你湊到的所有獎項都 KEY 進來（不用管數量），然後填「這場預計 N 人參加」<br>
+    → 系統會依「大到小」自動挑前 N 份放進本場獎品池，其餘先擱著。<br>
+    <strong>優先順序</strong>：特獎 → 頭獎 → 一/二/三/…獎 → 普獎 → 安慰獎。同等級隨機挑。
+  </p>
+
+  {% if active_branch and pool_stats %}
+    <div class="grid" style="margin-top:14px;">
+      <div class="stat" data-emoji="🎯">
+        <strong>本場獎品池</strong>
+        <div class="num">{{ (pool_stats.avail or 0) + (pool_stats.assigned or 0) }}</div>
+      </div>
+      <div class="stat" data-emoji="✅">
+        <strong>已抽走</strong>
+        <div class="num">{{ pool_stats.assigned or 0 }}</div>
+      </div>
+      <div class="stat" data-emoji="⏳">
+        <strong>池中待抽</strong>
+        <div class="num">{{ pool_stats.avail or 0 }}</div>
+      </div>
+      <div class="stat" data-emoji="📦">
+        <strong>擱置未用</strong>
+        <div class="num">{{ pool_stats.excluded or 0 }}</div>
+      </div>
+    </div>
+
+    {% if pool_breakdown %}
+      <div class="table-wrap" style="margin-top:12px;">
+        <table>
+          <thead>
+            <tr><th>等級</th><th>池中待抽</th><th>已抽走</th><th>擱置</th></tr>
+          </thead>
+          <tbody>
+            {% for row in pool_breakdown %}
+              <tr>
+                <td>{{ row['tier'] or '（未分級）' }}</td>
+                <td><strong>{{ row['avail'] or 0 }}</strong></td>
+                <td>{{ row['assigned'] or 0 }}</td>
+                <td>{{ row['excluded'] or 0 }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% endif %}
+
+    <form method="post" action="{{ url_for('admin_apply_pool') }}"
+          style="margin-top:14px;"
+          onsubmit="return confirm('要依此人數重新配比本場獎品池嗎？（已抽走的不會動）')">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>本場預計參加人數（{{ active_branch['name'] }}）</label>
+      <input name="pool_size" type="number" min="1" value="{{ event_pool_size }}"
+             placeholder="例如 15" required>
+      <button class="btn success" type="submit" style="margin-top:12px;">
+        🎲 自動配比
+      </button>
+    </form>
+  {% elif not active_branch %}
+    <p class="muted">⚠️ 請先在上方指定目前活動館別。</p>
+  {% else %}
+    <p class="muted">本館還沒任何獎品，請先到「🎁 獎品」新增。</p>
+  {% endif %}
+</div>
+
 <div class="card">
   <h2 class="title">活動名稱</h2>
   <p class="muted">會顯示在登入頁與抽獎頁的標題。</p>
