@@ -4,13 +4,18 @@
 1. 每個員工只能抽一次
 2. 每份獎品只會被派給一位員工
 
-原子性由 SQLite BEGIN IMMEDIATE + UNIQUE 約束共同保證。
+支援兩種資料庫：
+- 未設 DATABASE_URL → 本機 SQLite（開發用）
+- DATABASE_URL 指向 Postgres → 雲端 Postgres（正式部署，資料持久化）
+
+原子性：
+- Postgres：SELECT ... FOR UPDATE SKIP LOCKED + 條件式 UPDATE + UNIQUE 約束
+- SQLite  ：BEGIN IMMEDIATE + 條件式 UPDATE + UNIQUE 約束
 """
 import csv
 import io
 import os
 import secrets
-import sqlite3
 import time
 from base64 import b64encode
 from collections import defaultdict, deque
@@ -20,13 +25,96 @@ from pathlib import Path
 
 import qrcode
 from flask import (
-    Flask, Response, flash, g, jsonify, redirect,
+    Flask, Response, flash, g, redirect,
     render_template, request, session, url_for,
 )
 from werkzeug.security import check_password_hash, generate_password_hash
 
 BASE_DIR = Path(__file__).resolve().parent
-DB_PATH = Path(os.environ.get('DB_PATH', BASE_DIR / 'lottery.db'))
+
+
+# ============================================================================
+# 資料庫抽象層：同一份程式可以跑 SQLite 或 Postgres
+# ============================================================================
+
+DATABASE_URL = os.environ.get('DATABASE_URL', '').strip()
+# Render / Heroku 有時給的是 postgres:// 前綴（已 deprecated），normalize
+if DATABASE_URL.startswith('postgres://'):
+    DATABASE_URL = 'postgresql://' + DATABASE_URL[len('postgres://'):]
+
+IS_PG = DATABASE_URL.startswith('postgresql://')
+
+if IS_PG:
+    import psycopg2  # noqa: F401
+    import psycopg2.extras
+else:
+    import sqlite3
+    SQLITE_PATH = Path(os.environ.get('DB_PATH', BASE_DIR / 'lottery.db'))
+
+
+def _connect_raw():
+    if IS_PG:
+        conn = psycopg2.connect(DATABASE_URL, sslmode='require',
+                                cursor_factory=psycopg2.extras.RealDictCursor)
+        conn.autocommit = False
+        return conn
+    conn = sqlite3.connect(SQLITE_PATH, timeout=30, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    conn.execute('PRAGMA foreign_keys = ON')
+    return conn
+
+
+def _translate(sql):
+    """SQLite 用 ? 佔位符，Postgres 用 %s。"""
+    if IS_PG:
+        return sql.replace('?', '%s')
+    return sql
+
+
+class DbConn:
+    """薄薄一層 wrapper：兩個 driver 統一 execute / commit / rollback 介面。"""
+    def __init__(self, raw):
+        self._raw = raw
+        self._in_tx = False
+
+    def execute(self, sql, params=()):
+        cur = self._raw.cursor()
+        cur.execute(_translate(sql), params)
+        return cur
+
+    def executemany(self, sql, params_list):
+        cur = self._raw.cursor()
+        cur.executemany(_translate(sql), params_list)
+        return cur
+
+    def commit(self):
+        self._raw.commit()
+        self._in_tx = False
+
+    def rollback(self):
+        self._raw.rollback()
+        self._in_tx = False
+
+    def close(self):
+        try:
+            self._raw.close()
+        except Exception:
+            pass
+
+    def begin(self):
+        """在 SQLite 用 BEGIN IMMEDIATE 提升寫入鎖等級；Postgres 用預設。"""
+        if IS_PG:
+            # psycopg2 是隱式 begin；autocommit=False 已在 _connect_raw 設好
+            self._in_tx = True
+        else:
+            cur = self._raw.cursor()
+            cur.execute('BEGIN IMMEDIATE')
+            self._in_tx = True
+
+
+# ============================================================================
+# Flask
+# ============================================================================
 
 app = Flask(__name__)
 app.secret_key = os.environ.get('SECRET_KEY') or secrets.token_hex(32)
@@ -39,102 +127,163 @@ DEFAULT_ADMIN_USERNAME = os.environ.get('ADMIN_USERNAME', 'admin')
 DEFAULT_ADMIN_PASSWORD = os.environ.get('ADMIN_PASSWORD', 'admin1234')
 
 
-# ----------------------------- DB ------------------------------------------
-
 def get_db():
     if 'db' not in g:
-        conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-        conn.row_factory = sqlite3.Row
-        conn.execute('PRAGMA foreign_keys = ON')
-        g.db = conn
+        g.db = DbConn(_connect_raw())
     return g.db
 
 
 @app.teardown_appcontext
 def close_db(_exc):
-    conn = g.pop('db', None)
-    if conn is not None:
-        conn.close()
+    db = g.pop('db', None)
+    if db is not None:
+        db.close()
+
+
+# ============================================================================
+# DDL
+# ============================================================================
+
+# SQLite DDL
+SQLITE_DDL = '''
+PRAGMA journal_mode=WAL;
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS employees (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_no TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    department TEXT,
+    password_hash TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    has_drawn INTEGER NOT NULL DEFAULT 0,
+    drawn_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prizes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    tier TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prize_units (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    prize_id INTEGER NOT NULL,
+    unit_code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'AVAILABLE',
+    assigned_employee_id INTEGER,
+    assigned_at TEXT,
+    FOREIGN KEY(prize_id) REFERENCES prizes(id) ON DELETE CASCADE,
+    FOREIGN KEY(assigned_employee_id) REFERENCES employees(id)
+);
+
+CREATE TABLE IF NOT EXISTS draws (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    employee_id INTEGER NOT NULL UNIQUE,
+    prize_unit_id INTEGER NOT NULL UNIQUE,
+    drawn_at TEXT NOT NULL,
+    request_id TEXT NOT NULL UNIQUE,
+    FOREIGN KEY(employee_id) REFERENCES employees(id),
+    FOREIGN KEY(prize_unit_id) REFERENCES prize_units(id)
+);
+
+CREATE TABLE IF NOT EXISTS admins (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+'''
+
+# Postgres DDL
+PG_DDL = '''
+CREATE TABLE IF NOT EXISTS employees (
+    id SERIAL PRIMARY KEY,
+    employee_no TEXT NOT NULL UNIQUE,
+    name TEXT NOT NULL,
+    department TEXT,
+    password_hash TEXT NOT NULL,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    has_drawn INTEGER NOT NULL DEFAULT 0,
+    drawn_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prizes (
+    id SERIAL PRIMARY KEY,
+    name TEXT NOT NULL,
+    tier TEXT,
+    is_active INTEGER NOT NULL DEFAULT 1,
+    created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS prize_units (
+    id SERIAL PRIMARY KEY,
+    prize_id INTEGER NOT NULL REFERENCES prizes(id) ON DELETE CASCADE,
+    unit_code TEXT NOT NULL UNIQUE,
+    status TEXT NOT NULL DEFAULT 'AVAILABLE',
+    assigned_employee_id INTEGER REFERENCES employees(id),
+    assigned_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS draws (
+    id SERIAL PRIMARY KEY,
+    employee_id INTEGER NOT NULL UNIQUE REFERENCES employees(id),
+    prize_unit_id INTEGER NOT NULL UNIQUE REFERENCES prize_units(id),
+    drawn_at TEXT NOT NULL,
+    request_id TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS admins (
+    id SERIAL PRIMARY KEY,
+    username TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+'''
 
 
 def init_db():
-    conn = sqlite3.connect(DB_PATH, timeout=30, isolation_level=None)
-    conn.row_factory = sqlite3.Row
-    cur = conn.cursor()
-    cur.executescript(
-        '''
-        PRAGMA journal_mode=WAL;
-        PRAGMA foreign_keys = ON;
+    raw = _connect_raw()
+    cur = raw.cursor()
+    if IS_PG:
+        cur.execute(PG_DDL)
+    else:
+        cur.executescript(SQLITE_DDL)
 
-        CREATE TABLE IF NOT EXISTS employees (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            employee_no TEXT NOT NULL UNIQUE,
-            name TEXT NOT NULL,
-            department TEXT,
-            password_hash TEXT NOT NULL,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            has_drawn INTEGER NOT NULL DEFAULT 0,
-            drawn_at TEXT,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS prizes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            tier TEXT,
-            is_active INTEGER NOT NULL DEFAULT 1,
-            created_at TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS prize_units (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            prize_id INTEGER NOT NULL,
-            unit_code TEXT NOT NULL UNIQUE,
-            status TEXT NOT NULL DEFAULT 'AVAILABLE',
-            assigned_employee_id INTEGER,
-            assigned_at TEXT,
-            FOREIGN KEY(prize_id) REFERENCES prizes(id) ON DELETE CASCADE,
-            FOREIGN KEY(assigned_employee_id) REFERENCES employees(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS draws (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            employee_id INTEGER NOT NULL UNIQUE,
-            prize_unit_id INTEGER NOT NULL UNIQUE,
-            drawn_at TEXT NOT NULL,
-            request_id TEXT NOT NULL UNIQUE,
-            FOREIGN KEY(employee_id) REFERENCES employees(id),
-            FOREIGN KEY(prize_unit_id) REFERENCES prize_units(id)
-        );
-
-        CREATE TABLE IF NOT EXISTS admins (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT NOT NULL UNIQUE,
-            password_hash TEXT NOT NULL
-        );
-
-        CREATE TABLE IF NOT EXISTS settings (
-            key TEXT PRIMARY KEY,
-            value TEXT NOT NULL
-        );
-        '''
-    )
-
-    admin_row = cur.execute('SELECT COUNT(*) FROM admins').fetchone()[0]
-    if admin_row == 0:
+    # 第一次啟動：建管理員
+    cur.execute(_translate('SELECT COUNT(*) AS c FROM admins'))
+    row = cur.fetchone()
+    admin_count = row['c'] if row else 0
+    if admin_count == 0:
         cur.execute(
-            'INSERT INTO admins(username, password_hash) VALUES (?, ?)',
+            _translate('INSERT INTO admins(username, password_hash) VALUES (?, ?)'),
             (DEFAULT_ADMIN_USERNAME, generate_password_hash(DEFAULT_ADMIN_PASSWORD)),
         )
 
+    # 預設 settings
     for key, value in [('draw_open', '1'), ('event_title', '尾牙抽獎')]:
         cur.execute(
-            'INSERT OR IGNORE INTO settings(key, value) VALUES (?, ?)',
+            _translate(
+                'INSERT INTO settings(key, value) VALUES (?, ?) '
+                'ON CONFLICT (key) DO NOTHING'
+            ),
             (key, value),
         )
 
-    conn.commit()
-    conn.close()
+    raw.commit()
+    raw.close()
 
 
 def get_setting(key, default=''):
@@ -143,11 +292,13 @@ def get_setting(key, default=''):
 
 
 def set_setting(key, value):
-    get_db().execute(
+    db = get_db()
+    db.execute(
         'INSERT INTO settings(key, value) VALUES (?, ?) '
-        'ON CONFLICT(key) DO UPDATE SET value=excluded.value',
+        'ON CONFLICT (key) DO UPDATE SET value=excluded.value',
         (key, str(value)),
     )
+    db.commit()
 
 
 def draw_is_open():
@@ -158,7 +309,16 @@ def now_str():
     return datetime.now().isoformat(timespec='seconds')
 
 
-# ---------------------------- CSRF -----------------------------------------
+def to_int(v, default=0):
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return default
+
+
+# ============================================================================
+# CSRF
+# ============================================================================
 
 def get_csrf_token():
     token = session.get('csrf_token')
@@ -191,7 +351,9 @@ def inject_globals():
     }
 
 
-# ---------------------- 登入速率限制（記憶體） -------------------------------
+# ============================================================================
+# 登入速率限制（記憶體）
+# ============================================================================
 
 _login_attempts = defaultdict(deque)
 _LOGIN_LIMIT = 10
@@ -210,10 +372,13 @@ def rate_limit_login(bucket):
 
 
 def client_ip():
-    return request.headers.get('X-Forwarded-For', request.remote_addr or 'unknown').split(',')[0].strip()
+    return (request.headers.get('X-Forwarded-For', request.remote_addr or 'unknown')
+            .split(',')[0].strip())
 
 
-# ---------------------------- Decorators -----------------------------------
+# ============================================================================
+# Decorators
+# ============================================================================
 
 def employee_required(fn):
     @wraps(fn)
@@ -240,9 +405,9 @@ def current_employee():
     return get_db().execute('SELECT * FROM employees WHERE id = ?', (eid,)).fetchone()
 
 
-# =============================================================================
+# ============================================================================
 # 員工端
-# =============================================================================
+# ============================================================================
 
 @app.route('/')
 def index():
@@ -285,8 +450,8 @@ def draw_page():
     emp = current_employee()
     if not emp:
         return redirect(url_for('login'))
-    conn = get_db()
-    record = conn.execute(
+    db = get_db()
+    record = db.execute(
         '''
         SELECT d.drawn_at, p.name AS prize_name, p.tier AS prize_tier, pu.unit_code
         FROM draws d
@@ -296,9 +461,10 @@ def draw_page():
         ''',
         (emp['id'],),
     ).fetchone()
-    remaining = conn.execute(
-        "SELECT COUNT(*) FROM prize_units WHERE status = 'AVAILABLE'"
-    ).fetchone()[0]
+    remaining_row = db.execute(
+        "SELECT COUNT(*) AS c FROM prize_units WHERE status = 'AVAILABLE'"
+    ).fetchone()
+    remaining = remaining_row['c']
     return render_template('draw.html', employee=emp, record=record, remaining=remaining)
 
 
@@ -313,35 +479,56 @@ def do_draw():
         flash('抽獎尚未開放或已結束', 'error')
         return redirect(url_for('draw_page'))
 
-    conn = get_db()
-    cur = conn.cursor()
+    db = get_db()
     request_id = secrets.token_hex(16)
     try:
-        cur.execute('BEGIN IMMEDIATE')
-        e = cur.execute(
-            'SELECT id, has_drawn FROM employees WHERE id = ? AND is_active = 1',
-            (emp['id'],),
-        ).fetchone()
+        db.begin()
+
+        # 讀員工，Postgres 順便鎖 row
+        if IS_PG:
+            e = db.execute(
+                'SELECT id, has_drawn FROM employees '
+                'WHERE id = ? AND is_active = 1 FOR UPDATE',
+                (emp['id'],),
+            ).fetchone()
+        else:
+            e = db.execute(
+                'SELECT id, has_drawn FROM employees WHERE id = ? AND is_active = 1',
+                (emp['id'],),
+            ).fetchone()
         if not e:
             raise ValueError('員工不存在或已停用')
         if e['has_drawn']:
             raise ValueError('您已經抽過獎了')
 
-        prize = cur.execute(
-            '''
-            SELECT pu.id, pu.unit_code, p.name AS prize_name, p.tier AS prize_tier
-            FROM prize_units pu
-            JOIN prizes p ON p.id = pu.prize_id
-            WHERE pu.status = 'AVAILABLE' AND p.is_active = 1
-            ORDER BY RANDOM() LIMIT 1
-            '''
-        ).fetchone()
+        # 挑一份可用獎品。Postgres 用 FOR UPDATE SKIP LOCKED 讓多人並發最有效率
+        if IS_PG:
+            prize = db.execute(
+                '''
+                SELECT pu.id, pu.unit_code, p.name AS prize_name, p.tier AS prize_tier
+                FROM prize_units pu
+                JOIN prizes p ON p.id = pu.prize_id
+                WHERE pu.status = 'AVAILABLE' AND p.is_active = 1
+                ORDER BY RANDOM() LIMIT 1
+                FOR UPDATE OF pu SKIP LOCKED
+                '''
+            ).fetchone()
+        else:
+            prize = db.execute(
+                '''
+                SELECT pu.id, pu.unit_code, p.name AS prize_name, p.tier AS prize_tier
+                FROM prize_units pu
+                JOIN prizes p ON p.id = pu.prize_id
+                WHERE pu.status = 'AVAILABLE' AND p.is_active = 1
+                ORDER BY RANDOM() LIMIT 1
+                '''
+            ).fetchone()
         if not prize:
             raise ValueError('獎品已抽完，感謝參與')
 
         now = now_str()
-        # 條件式 UPDATE：只在 status 仍是 AVAILABLE 時才更新
-        changed = cur.execute(
+        # 條件式 UPDATE：只在 status 仍是 AVAILABLE 時才更新（雙保險）
+        changed = db.execute(
             "UPDATE prize_units SET status='ASSIGNED', assigned_employee_id=?, assigned_at=? "
             "WHERE id=? AND status='AVAILABLE'",
             (e['id'], now, prize['id']),
@@ -349,26 +536,26 @@ def do_draw():
         if changed != 1:
             raise ValueError('這份獎品剛被搶走了，請再試一次')
 
-        cur.execute(
+        db.execute(
             'UPDATE employees SET has_drawn=1, drawn_at=? WHERE id=?',
             (now, e['id']),
         )
-        cur.execute(
+        db.execute(
             'INSERT INTO draws(employee_id, prize_unit_id, drawn_at, request_id) '
             'VALUES (?, ?, ?, ?)',
             (e['id'], prize['id'], now, request_id),
         )
-        conn.commit()
+        db.commit()
         flash(f"恭喜抽中：{prize['prize_name']}（{prize['prize_tier'] or '普獎'}）", 'success')
     except Exception as ex:
-        conn.rollback()
+        db.rollback()
         flash(str(ex), 'error')
     return redirect(url_for('draw_page'))
 
 
-# =============================================================================
+# ============================================================================
 # 管理員登入
-# =============================================================================
+# ============================================================================
 
 @app.route('/admin/login', methods=['GET', 'POST'])
 def admin_login():
@@ -399,21 +586,21 @@ def admin_logout():
     return redirect(url_for('admin_login'))
 
 
-# =============================================================================
+# ============================================================================
 # 管理員：Dashboard
-# =============================================================================
+# ============================================================================
 
 @app.route('/admin/')
 @admin_required
 def admin_dashboard():
-    conn = get_db()
+    db = get_db()
     summary = {
-        'employee_total': conn.execute('SELECT COUNT(*) FROM employees WHERE is_active=1').fetchone()[0],
-        'drawn_total': conn.execute('SELECT COUNT(*) FROM draws').fetchone()[0],
-        'prize_total': conn.execute('SELECT COUNT(*) FROM prize_units').fetchone()[0],
-        'remaining_total': conn.execute("SELECT COUNT(*) FROM prize_units WHERE status='AVAILABLE'").fetchone()[0],
+        'employee_total': db.execute('SELECT COUNT(*) AS c FROM employees WHERE is_active=1').fetchone()['c'],
+        'drawn_total': db.execute('SELECT COUNT(*) AS c FROM draws').fetchone()['c'],
+        'prize_total': db.execute('SELECT COUNT(*) AS c FROM prize_units').fetchone()['c'],
+        'remaining_total': db.execute("SELECT COUNT(*) AS c FROM prize_units WHERE status='AVAILABLE'").fetchone()['c'],
     }
-    records = conn.execute(
+    records = db.execute(
         '''
         SELECT e.employee_no, e.name, e.department,
                d.drawn_at, p.name AS prize_name, p.tier AS prize_tier, pu.unit_code
@@ -424,7 +611,7 @@ def admin_dashboard():
         ORDER BY d.drawn_at DESC
         '''
     ).fetchall()
-    inventory = conn.execute(
+    inventory = db.execute(
         '''
         SELECT p.id, p.name, p.tier,
                SUM(CASE WHEN pu.status='AVAILABLE' THEN 1 ELSE 0 END) AS remaining,
@@ -439,9 +626,9 @@ def admin_dashboard():
                            summary=summary, records=records, inventory=inventory)
 
 
-# =============================================================================
+# ============================================================================
 # 管理員：員工管理
-# =============================================================================
+# ============================================================================
 
 @app.route('/admin/employees')
 @admin_required
@@ -462,15 +649,21 @@ def admin_employee_new():
     if not employee_no or not name or not password:
         flash('工號、姓名、密碼皆必填', 'error')
         return redirect(url_for('admin_employees'))
+    db = get_db()
     try:
-        get_db().execute(
+        db.execute(
             'INSERT INTO employees(employee_no, name, department, password_hash, created_at) '
             'VALUES (?, ?, ?, ?, ?)',
             (employee_no, name, department, generate_password_hash(password), now_str()),
         )
+        db.commit()
         flash(f'已新增：{name}（{employee_no}）', 'success')
-    except sqlite3.IntegrityError:
-        flash(f'工號 {employee_no} 已存在', 'error')
+    except Exception as e:
+        db.rollback()
+        if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
+            flash(f'工號 {employee_no} 已存在', 'error')
+        else:
+            flash(f'新增失敗：{e}', 'error')
     return redirect(url_for('admin_employees'))
 
 
@@ -483,8 +676,8 @@ def admin_employee_bulk():
         flash('請貼上 CSV 資料', 'error')
         return redirect(url_for('admin_employees'))
     ok, dup, bad = 0, 0, 0
-    conn = get_db()
-    for lineno, line in enumerate(raw.splitlines(), 1):
+    db = get_db()
+    for line in raw.splitlines():
         line = line.strip()
         if not line or line.startswith('#'):
             continue
@@ -497,14 +690,19 @@ def admin_employee_bulk():
             bad += 1
             continue
         try:
-            conn.execute(
+            db.execute(
                 'INSERT INTO employees(employee_no, name, department, password_hash, created_at) '
                 'VALUES (?, ?, ?, ?, ?)',
                 (employee_no, name, department, generate_password_hash(password), now_str()),
             )
+            db.commit()
             ok += 1
-        except sqlite3.IntegrityError:
-            dup += 1
+        except Exception as e:
+            db.rollback()
+            if 'unique' in str(e).lower() or 'duplicate' in str(e).lower():
+                dup += 1
+            else:
+                bad += 1
     flash(f'匯入完成：成功 {ok}、重複 {dup}、格式錯誤 {bad}',
           'success' if ok else 'error')
     return redirect(url_for('admin_employees'))
@@ -519,16 +717,18 @@ def admin_employee_edit(emp_id):
     if not name:
         flash('姓名必填', 'error')
         return redirect(url_for('admin_employees'))
+    db = get_db()
     if password:
-        get_db().execute(
+        db.execute(
             'UPDATE employees SET name=?, department=?, password_hash=? WHERE id=?',
             (name, department, generate_password_hash(password), emp_id),
         )
     else:
-        get_db().execute(
+        db.execute(
             'UPDATE employees SET name=?, department=? WHERE id=?',
             (name, department, emp_id),
         )
+    db.commit()
     flash('已更新', 'success')
     return redirect(url_for('admin_employees'))
 
@@ -536,22 +736,24 @@ def admin_employee_edit(emp_id):
 @app.route('/admin/employees/<int:emp_id>/toggle', methods=['POST'])
 @admin_required
 def admin_employee_toggle(emp_id):
-    get_db().execute(
+    db = get_db()
+    db.execute(
         'UPDATE employees SET is_active = 1 - is_active WHERE id = ?', (emp_id,)
     )
+    db.commit()
     return redirect(url_for('admin_employees'))
 
 
-# =============================================================================
+# ============================================================================
 # 管理員：獎品管理
-# =============================================================================
+# ============================================================================
 
 @app.route('/admin/prizes')
 @admin_required
 def admin_prizes():
     prizes = get_db().execute(
         '''
-        SELECT p.*,
+        SELECT p.id, p.name, p.tier, p.is_active, p.created_at,
                (SELECT COUNT(*) FROM prize_units pu WHERE pu.prize_id = p.id) AS total,
                (SELECT COUNT(*) FROM prize_units pu
                  WHERE pu.prize_id = p.id AND pu.status = 'AVAILABLE') AS remaining
@@ -567,31 +769,31 @@ def admin_prizes():
 def admin_prize_new():
     name = request.form.get('name', '').strip()
     tier = request.form.get('tier', '').strip() or '普獎'
-    try:
-        quantity = max(1, int(request.form.get('quantity', '1')))
-    except ValueError:
-        quantity = 1
+    quantity = max(1, to_int(request.form.get('quantity', '1'), 1))
     if not name:
         flash('獎項名稱必填', 'error')
         return redirect(url_for('admin_prizes'))
-    conn = get_db()
-    cur = conn.cursor()
-    cur.execute(
-        'INSERT INTO prizes(name, tier, created_at) VALUES (?, ?, ?)',
-        (name, tier, now_str()),
+    db = get_db()
+    if IS_PG:
+        cur = db.execute(
+            'INSERT INTO prizes(name, tier, created_at) VALUES (?, ?, ?) RETURNING id',
+            (name, tier, now_str()),
+        )
+        prize_id = cur.fetchone()['id']
+    else:
+        cur = db.execute(
+            'INSERT INTO prizes(name, tier, created_at) VALUES (?, ?, ?)',
+            (name, tier, now_str()),
+        )
+        prize_id = cur.lastrowid
+
+    # 一律加隨機後綴，避免同名獎項的 unit_code 撞名
+    suffix = secrets.token_hex(2)
+    units = [(prize_id, f"{name}-{suffix}-{i:03d}") for i in range(1, quantity + 1)]
+    db.executemany(
+        'INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)', units
     )
-    prize_id = cur.lastrowid
-    units = [(prize_id, f"{name}-{i:03d}") for i in range(1, quantity + 1)]
-    try:
-        cur.executemany(
-            'INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)', units
-        )
-    except sqlite3.IntegrityError:
-        # unit_code 撞名，補上 hex 後綴
-        cur.executemany(
-            'INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)',
-            [(prize_id, f"{name}-{i:03d}-{secrets.token_hex(3)}") for i in range(1, quantity + 1)],
-        )
+    db.commit()
     flash(f'已新增獎品：{name} x {quantity}', 'success')
     return redirect(url_for('admin_prizes'))
 
@@ -604,10 +806,12 @@ def admin_prize_edit(prize_id):
     if not name:
         flash('獎項名稱必填', 'error')
         return redirect(url_for('admin_prizes'))
-    get_db().execute(
+    db = get_db()
+    db.execute(
         'UPDATE prizes SET name=?, tier=? WHERE id=?',
         (name, tier, prize_id),
     )
+    db.commit()
     flash('已更新', 'success')
     return redirect(url_for('admin_prizes'))
 
@@ -615,25 +819,21 @@ def admin_prize_edit(prize_id):
 @app.route('/admin/prizes/<int:prize_id>/add_units', methods=['POST'])
 @admin_required
 def admin_prize_add_units(prize_id):
-    try:
-        qty = max(1, int(request.form.get('quantity', '1')))
-    except ValueError:
-        qty = 1
-    conn = get_db()
-    prize = conn.execute('SELECT name FROM prizes WHERE id = ?', (prize_id,)).fetchone()
+    qty = max(1, to_int(request.form.get('quantity', '1'), 1))
+    db = get_db()
+    prize = db.execute('SELECT name FROM prizes WHERE id = ?', (prize_id,)).fetchone()
     if not prize:
         flash('找不到此獎項', 'error')
         return redirect(url_for('admin_prizes'))
-    existing = conn.execute(
-        'SELECT COUNT(*) FROM prize_units WHERE prize_id = ?', (prize_id,)
-    ).fetchone()[0]
+    existing = db.execute(
+        'SELECT COUNT(*) AS c FROM prize_units WHERE prize_id = ?', (prize_id,)
+    ).fetchone()['c']
     units = [
         (prize_id, f"{prize['name']}-{i:03d}-{secrets.token_hex(2)}")
         for i in range(existing + 1, existing + qty + 1)
     ]
-    conn.executemany(
-        'INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)', units
-    )
+    db.executemany('INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)', units)
+    db.commit()
     flash(f'已加開 {qty} 份', 'success')
     return redirect(url_for('admin_prizes'))
 
@@ -641,31 +841,32 @@ def admin_prize_add_units(prize_id):
 @app.route('/admin/prizes/<int:prize_id>/toggle', methods=['POST'])
 @admin_required
 def admin_prize_toggle(prize_id):
-    get_db().execute(
-        'UPDATE prizes SET is_active = 1 - is_active WHERE id = ?', (prize_id,)
-    )
+    db = get_db()
+    db.execute('UPDATE prizes SET is_active = 1 - is_active WHERE id = ?', (prize_id,))
+    db.commit()
     return redirect(url_for('admin_prizes'))
 
 
 @app.route('/admin/prizes/<int:prize_id>/delete', methods=['POST'])
 @admin_required
 def admin_prize_delete(prize_id):
-    conn = get_db()
-    assigned = conn.execute(
-        "SELECT COUNT(*) FROM prize_units WHERE prize_id = ? AND status = 'ASSIGNED'",
+    db = get_db()
+    assigned = db.execute(
+        "SELECT COUNT(*) AS c FROM prize_units WHERE prize_id = ? AND status = 'ASSIGNED'",
         (prize_id,),
-    ).fetchone()[0]
+    ).fetchone()['c']
     if assigned:
         flash('此獎項已有中獎紀錄，無法刪除。可改為停用。', 'error')
         return redirect(url_for('admin_prizes'))
-    conn.execute('DELETE FROM prizes WHERE id = ?', (prize_id,))
+    db.execute('DELETE FROM prizes WHERE id = ?', (prize_id,))
+    db.commit()
     flash('已刪除', 'success')
     return redirect(url_for('admin_prizes'))
 
 
-# =============================================================================
+# ============================================================================
 # 管理員：系統設定
-# =============================================================================
+# ============================================================================
 
 @app.route('/admin/settings', methods=['GET'])
 @admin_required
@@ -697,18 +898,18 @@ def admin_reset():
     if confirm != 'RESET':
         flash('請於欄位輸入 RESET 確認', 'error')
         return redirect(url_for('admin_settings'))
-    conn = get_db()
-    conn.execute('BEGIN IMMEDIATE')
+    db = get_db()
     try:
-        conn.execute('DELETE FROM draws')
-        conn.execute(
+        db.begin()
+        db.execute('DELETE FROM draws')
+        db.execute(
             "UPDATE prize_units SET status='AVAILABLE', assigned_employee_id=NULL, assigned_at=NULL"
         )
-        conn.execute('UPDATE employees SET has_drawn=0, drawn_at=NULL')
-        conn.commit()
+        db.execute('UPDATE employees SET has_drawn=0, drawn_at=NULL')
+        db.commit()
         flash('已重置所有抽獎紀錄', 'success')
     except Exception as ex:
-        conn.rollback()
+        db.rollback()
         flash(f'重置失敗：{ex}', 'error')
     return redirect(url_for('admin_settings'))
 
@@ -722,16 +923,18 @@ def admin_change_password():
         flash('新密碼長度至少 6 字元', 'error')
         return redirect(url_for('admin_settings'))
     admin_id = session['admin_id']
-    row = get_db().execute(
+    db = get_db()
+    row = db.execute(
         'SELECT password_hash FROM admins WHERE id = ?', (admin_id,)
     ).fetchone()
     if not row or not check_password_hash(row['password_hash'], old):
         flash('原密碼錯誤', 'error')
         return redirect(url_for('admin_settings'))
-    get_db().execute(
+    db.execute(
         'UPDATE admins SET password_hash = ? WHERE id = ?',
         (generate_password_hash(new), admin_id),
     )
+    db.commit()
     flash('密碼已更新', 'success')
     return redirect(url_for('admin_settings'))
 
@@ -768,9 +971,9 @@ def admin_export_winners():
     )
 
 
-# =============================================================================
+# ============================================================================
 # QR Code
-# =============================================================================
+# ============================================================================
 
 @app.route('/admin/qrcode')
 @admin_required
@@ -783,9 +986,22 @@ def admin_qrcode():
     return render_template('admin/qrcode.html', target_url=target, qr_b64=qr_b64)
 
 
-# =============================================================================
+# ============================================================================
+# 健康檢查
+# ============================================================================
+
+@app.route('/healthz')
+def healthz():
+    try:
+        row = get_db().execute("SELECT 1 AS ok").fetchone()
+        return {'ok': True, 'db': 'pg' if IS_PG else 'sqlite', 'result': dict(row)}
+    except Exception as e:
+        return {'ok': False, 'error': str(e)}, 500
+
+
+# ============================================================================
 # 啟動
-# =============================================================================
+# ============================================================================
 
 with app.app_context():
     init_db()
