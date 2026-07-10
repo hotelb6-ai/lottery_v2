@@ -1321,6 +1321,271 @@ def admin_branch_delete(bid):
     return redirect(url_for('admin_branches'))
 
 
+# ============================================================================
+# 自動設計獎項組合（從資源總量）
+# ============================================================================
+
+def _round_to(x, step):
+    if step <= 0:
+        return int(round(x))
+    return int(round(x / step)) * step
+
+
+def _compute_tier_slots(n):
+    """依人數 N 決定「大到小」的等級名額分配。回傳 [(tier, count), ...]"""
+    if n <= 0:
+        return []
+    if n == 1:
+        return [('特獎', 1)]
+    if n == 2:
+        return [('特獎', 1), ('頭獎', 1)]
+    if n <= 4:
+        return [('特獎', 1), ('頭獎', 1), ('二獎', n - 2)]
+    if n <= 8:
+        head = 1
+        two = max(1, (n - 2) // 2)
+        three = n - 1 - head - two
+        return [('特獎', 1), ('頭獎', head), ('二獎', two), ('三獎', three)]
+    # n >= 9：加入普獎
+    head = max(1, n // 10)
+    two = max(1, n // 6)
+    three = max(1, n // 4)
+    common = n - 1 - head - two - three
+    if common <= 0:
+        # 沒剩就把三獎縮小
+        three = max(0, n - 1 - head - two)
+        return [(t, c) for t, c in
+                [('特獎', 1), ('頭獎', head), ('二獎', two), ('三獎', three)] if c > 0]
+    return [('特獎', 1), ('頭獎', head), ('二獎', two),
+            ('三獎', three), ('普獎', common)]
+
+
+# 各等級的分配權重（每一份用）
+_CASH_WEIGHT = {'特獎': 5, '頭獎': 3, '二獎': 2, '三獎': 1, '普獎': 0}
+_VOUCHER_WEIGHT = {'特獎': 2, '頭獎': 2, '二獎': 2, '三獎': 2, '普獎': 3}
+
+
+def _distribute_amount(prizes, total, weight_map, round_step, dump_tier):
+    """把 total 依 weight_map 分配到 prizes 的某個欄位（cash 或 voucher）。
+    prizes: list of dict，會就地修改。dump_tier: 尾差累積到哪個等級。"""
+    if total <= 0:
+        return
+    total_weight = sum(weight_map.get(p['tier'], 0) for p in prizes)
+    if total_weight <= 0:
+        return
+    unit = total / total_weight
+    for p in prizes:
+        w = weight_map.get(p['tier'], 0)
+        if w > 0:
+            p.setdefault('amounts', {})
+            # store amount computation directly on prize entry
+            pass
+    # 兩段：先算未 round 的原值 → round → 補尾差
+
+
+def _generate_distribution(items_flat, cash, voucher, n, round_step=100):
+    """演算法主體：回傳 list of dict:
+       [{rank, tier, item_name, cash, voucher, total_value}, ...]"""
+    tiers = _compute_tier_slots(n)
+    prizes = []
+    rank = 1
+    for tier, count in tiers:
+        for _ in range(count):
+            prizes.append({'rank': rank, 'tier': tier,
+                           'item_name': '', 'cash': 0, 'voucher': 0})
+            rank += 1
+
+    # 分配禮品：依價值降冪塞入排名靠前的獎
+    items_sorted = sorted(items_flat, key=lambda x: -x[1])
+    for i, (name, _val) in enumerate(items_sorted):
+        if i >= len(prizes):
+            break
+        prizes[i]['item_name'] = name
+
+    # 分配現金
+    total_w_cash = sum(_CASH_WEIGHT.get(p['tier'], 0) for p in prizes)
+    if cash > 0 and total_w_cash > 0:
+        unit = cash / total_w_cash
+        for p in prizes:
+            w = _CASH_WEIGHT.get(p['tier'], 0)
+            p['cash'] = _round_to(unit * w, round_step) if w else 0
+        # 修正尾差 → 加到特獎那一份
+        diff = cash - sum(p['cash'] for p in prizes)
+        if diff != 0:
+            for p in prizes:
+                if p['tier'] == '特獎':
+                    p['cash'] = max(0, p['cash'] + diff)
+                    break
+
+    # 分配禮券
+    total_w_v = sum(_VOUCHER_WEIGHT.get(p['tier'], 0) for p in prizes)
+    if voucher > 0 and total_w_v > 0:
+        unit = voucher / total_w_v
+        for p in prizes:
+            w = _VOUCHER_WEIGHT.get(p['tier'], 0)
+            p['voucher'] = _round_to(unit * w, round_step) if w else 0
+        diff = voucher - sum(p['voucher'] for p in prizes)
+        if diff != 0:
+            # 尾差往下丟 —— 普獎優先，否則丟到最後一份
+            for p in reversed(prizes):
+                p['voucher'] = max(0, p['voucher'] + diff)
+                break
+    return prizes
+
+
+def _parse_items_csv(raw):
+    """解析禮品清單 CSV: 每行 `name,value,quantity`
+    回傳 flat list of (name, value)：每份實體都展開成一列。"""
+    flat = []
+    errors = []
+    for lineno, line in enumerate(raw.splitlines(), 1):
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        parts = [p.strip() for p in line.split(',')]
+        if len(parts) < 3:
+            errors.append(f'第 {lineno} 行格式錯（需要三欄）')
+            continue
+        name = parts[0]
+        try:
+            value = int(float(parts[1]))
+            qty = int(parts[2])
+        except ValueError:
+            errors.append(f'第 {lineno} 行的估價或數量不是數字')
+            continue
+        if not name or value < 0 or qty <= 0:
+            errors.append(f'第 {lineno} 行資料不合理')
+            continue
+        for _ in range(qty):
+            flat.append((name, value))
+    return flat, errors
+
+
+def _prize_display_name(prize):
+    """把 item/cash/voucher 組合出顯示用名稱。"""
+    parts = []
+    if prize['item_name']:
+        parts.append(prize['item_name'])
+    if prize['cash'] > 0:
+        parts.append(f"現金 ${prize['cash']:,}")
+    if prize['voucher'] > 0:
+        parts.append(f"禮券 ${prize['voucher']:,}")
+    return ' + '.join(parts) if parts else '（無內容）'
+
+
+@app.route('/admin/generate', methods=['GET'])
+@admin_required
+def admin_generate_form():
+    ab_id = active_branch_id()
+    return render_template('admin/generate.html', active_branch_id=ab_id,
+                           active_branch=get_branch(ab_id) if ab_id else None)
+
+
+@app.route('/admin/generate/preview', methods=['POST'])
+@admin_required
+def admin_generate_preview():
+    ab_id = active_branch_id()
+    if ab_id is None:
+        flash('請先指定目前活動館別', 'error')
+        return redirect(url_for('admin_settings'))
+    items_raw = request.form.get('items_csv', '')
+    cash = max(0, to_int(request.form.get('cash', '0'), 0))
+    voucher = max(0, to_int(request.form.get('voucher', '0'), 0))
+    n = to_int(request.form.get('pool_size', '0'), 0)
+    round_step = max(0, to_int(request.form.get('round_step', '100'), 100))
+    if n <= 0:
+        flash('請輸入正整數的參加人數', 'error')
+        return redirect(url_for('admin_generate_form'))
+    items_flat, errors = _parse_items_csv(items_raw)
+    for e in errors:
+        flash(e, 'error')
+    prizes = _generate_distribution(items_flat, cash, voucher, n, round_step)
+    # 為每份加顯示名稱
+    for p in prizes:
+        p['display_name'] = _prize_display_name(p)
+    # 計算總值
+    total_item_value = sum(v for _, v in items_flat)
+    total_pool_value = total_item_value + cash + voucher
+    return render_template(
+        'admin/generate_preview.html',
+        prizes=prizes, active_branch=get_branch(ab_id),
+        items_csv=items_raw, cash=cash, voucher=voucher, n=n,
+        round_step=round_step,
+        total_item_value=total_item_value,
+        total_pool_value=total_pool_value,
+        item_count=len(items_flat),
+    )
+
+
+@app.route('/admin/generate/apply', methods=['POST'])
+@admin_required
+def admin_generate_apply():
+    """把預覽出的分配結果寫入 DB，會清空本館既有的 未派發 獎項後重建。
+    已 ASSIGNED 的獎項不動（保留歷史紀錄）。"""
+    ab_id = active_branch_id()
+    if ab_id is None:
+        flash('請先指定目前活動館別', 'error')
+        return redirect(url_for('admin_generate_form'))
+    # 從隱藏欄位重新算一次（避免中間被竄改）
+    items_raw = request.form.get('items_csv', '')
+    cash = max(0, to_int(request.form.get('cash', '0'), 0))
+    voucher = max(0, to_int(request.form.get('voucher', '0'), 0))
+    n = to_int(request.form.get('pool_size', '0'), 0)
+    round_step = max(0, to_int(request.form.get('round_step', '100'), 100))
+    if n <= 0:
+        flash('人數錯誤', 'error')
+        return redirect(url_for('admin_generate_form'))
+    items_flat, _errs = _parse_items_csv(items_raw)
+    prizes = _generate_distribution(items_flat, cash, voucher, n, round_step)
+
+    db = get_db()
+    try:
+        db.begin()
+        # 刪掉本館既有的 未 ASSIGNED 的獎品 units 和它們的 prizes
+        # 為安全起見：只刪除 prizes 中「所有 units 都還沒 ASSIGNED」的 prize
+        # 有 ASSIGNED unit 的 prize 保留
+        prize_ids_to_delete = [r['id'] for r in db.execute(
+            "SELECT p.id FROM prizes p WHERE p.branch_id = ? "
+            "AND NOT EXISTS (SELECT 1 FROM prize_units pu "
+            "                WHERE pu.prize_id = p.id AND pu.status = 'ASSIGNED')",
+            (ab_id,),
+        ).fetchall()]
+        for pid in prize_ids_to_delete:
+            db.execute('DELETE FROM prize_units WHERE prize_id = ?', (pid,))
+            db.execute('DELETE FROM prizes WHERE id = ?', (pid,))
+
+        # 為每一份獎（每個 rank 一份）建立一個 prize + 一個 prize_unit
+        for p in prizes:
+            display = _prize_display_name(p)
+            if IS_PG:
+                cur = db.execute(
+                    'INSERT INTO prizes(name, tier, branch_id, created_at) '
+                    'VALUES (?, ?, ?, ?) RETURNING id',
+                    (display, p['tier'], ab_id, now_str()),
+                )
+                prize_id = cur.fetchone()['id']
+            else:
+                cur = db.execute(
+                    'INSERT INTO prizes(name, tier, branch_id, created_at) '
+                    'VALUES (?, ?, ?, ?)',
+                    (display, p['tier'], ab_id, now_str()),
+                )
+                prize_id = cur.lastrowid
+            unit_code = f"{p['tier']}-{p['rank']:03d}-{secrets.token_hex(2)}"
+            db.execute(
+                'INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)',
+                (prize_id, unit_code),
+            )
+        db.commit()
+        set_setting('event_pool_size', str(n))
+        flash(f'✅ 已依你設定的資源，產生本場 {n} 份大到小的獎項', 'success')
+        return redirect(url_for('admin_prizes'))
+    except Exception as ex:
+        db.rollback()
+        flash(f'產生失敗：{ex}', 'error')
+        return redirect(url_for('admin_generate_form'))
+
+
 @app.route('/admin/settings/apply_pool', methods=['POST'])
 @admin_required
 def admin_apply_pool():

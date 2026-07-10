@@ -1,0 +1,80 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row" style="justify-content:space-between;">
+  <div>
+    <h1 class="title">🔍 分配預覽</h1>
+    <p class="subtitle">
+      {% if active_branch %}目前活動館：<strong>{{ active_branch['name'] }}</strong>{% endif %}
+      ｜{{ n }} 份獎項
+    </p>
+  </div>
+  <a class="btn secondary" href="{{ url_for('admin_generate_form') }}">← 回去改</a>
+</div>
+
+<div class="nav">
+  <a href="{{ url_for('admin_dashboard') }}">📊 總覽</a>
+  <a href="{{ url_for('admin_employees') }}">👥 員工</a>
+  <a href="{{ url_for('admin_prizes') }}">🎁 獎品</a>
+  <a class="active" href="{{ url_for('admin_generate_form') }}">🎨 自動設計</a>
+  <a href="{{ url_for('admin_branches') }}">🏢 館別</a>
+  <a href="{{ url_for('admin_settings') }}">⚙️ 設定</a>
+  <a href="{{ url_for('admin_qrcode') }}">📱 QR Code</a>
+</div>
+
+<div class="grid">
+  <div class="stat" data-emoji="🎁"><strong>禮品數</strong><div class="num">{{ item_count }}</div></div>
+  <div class="stat" data-emoji="💵"><strong>現金總額</strong><div class="num">${{ '{:,}'.format(cash) }}</div></div>
+  <div class="stat" data-emoji="🎟️"><strong>禮券總額</strong><div class="num">${{ '{:,}'.format(voucher) }}</div></div>
+  <div class="stat" data-emoji="💰"><strong>總價值</strong><div class="num">${{ '{:,}'.format(total_pool_value) }}</div></div>
+</div>
+
+<div class="card">
+  <h2 class="title">📋 產生的獎項組合</h2>
+  <div class="table-wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>排名</th><th>等級</th><th>禮品</th>
+          <th>現金</th><th>禮券</th><th>此份總值</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for p in prizes %}
+          <tr>
+            <td>{{ p['rank'] }}</td>
+            <td><strong>{{ p['tier'] }}</strong></td>
+            <td>{{ p['item_name'] or '—' }}</td>
+            <td>{% if p['cash'] > 0 %}${{ '{:,}'.format(p['cash']) }}{% else %}—{% endif %}</td>
+            <td>{% if p['voucher'] > 0 %}${{ '{:,}'.format(p['voucher']) }}{% else %}—{% endif %}</td>
+            <td>${{ '{:,}'.format(p['cash'] + p['voucher']) }}{% if p['item_name'] %}＋禮品{% endif %}</td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<div class="card" style="background:#fef3c7;border:2px solid #f59e0b;">
+  <h2 class="title">✅ 確認套用</h2>
+  <p class="muted">
+    按下確認會：
+    <br>1. <strong>刪掉</strong> 本館目前所有「還沒被抽走的獎項」
+    <br>2. 用上面預覽的組合 <strong>重建</strong> 本場 {{ n }} 份獎項
+    <br>3. 已抽走的紀錄會保留，不會被影響
+  </p>
+  <form method="post" action="{{ url_for('admin_generate_apply') }}"
+        onsubmit="return confirm('確定要套用這個分配嗎？本館現有未派發獎項會被覆寫。')">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <input type="hidden" name="items_csv" value="{{ items_csv }}">
+    <input type="hidden" name="cash" value="{{ cash }}">
+    <input type="hidden" name="voucher" value="{{ voucher }}">
+    <input type="hidden" name="pool_size" value="{{ n }}">
+    <input type="hidden" name="round_step" value="{{ round_step }}">
+    <button class="btn success" type="submit" style="font-size:18px;padding:16px 32px;">
+      ✅ 確認套用，寫入獎項清單
+    </button>
+    <a class="btn secondary" href="{{ url_for('admin_generate_form') }}"
+       style="margin-left:8px;">取消</a>
+  </form>
+</div>
+{% endblock %}

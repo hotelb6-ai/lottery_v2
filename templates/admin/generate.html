@@ -1,0 +1,74 @@
+{% extends 'base.html' %}
+{% block content %}
+<div class="row" style="justify-content:space-between;">
+  <div>
+    <h1 class="title">🎨 自動設計獎項組合</h1>
+    <p class="subtitle">
+      {% if active_branch %}目前活動館：<strong>{{ active_branch['name'] }}</strong>{% endif %}
+    </p>
+  </div>
+  <a class="btn secondary" href="{{ url_for('admin_logout') }}">登出</a>
+</div>
+
+<div class="nav">
+  <a href="{{ url_for('admin_dashboard') }}">📊 總覽</a>
+  <a href="{{ url_for('admin_employees') }}">👥 員工</a>
+  <a href="{{ url_for('admin_prizes') }}">🎁 獎品</a>
+  <a class="active" href="{{ url_for('admin_generate_form') }}">🎨 自動設計</a>
+  <a href="{{ url_for('admin_branches') }}">🏢 館別</a>
+  <a href="{{ url_for('admin_settings') }}">⚙️ 設定</a>
+  <a href="{{ url_for('admin_qrcode') }}">📱 QR Code</a>
+</div>
+
+{% if not active_branch %}
+  <div class="card" style="background:#fee2e2;">
+    <strong>⚠️ 尚未指定活動館別。請先到 <a href="{{ url_for('admin_settings') }}">設定</a> 選一館。</strong>
+  </div>
+{% else %}
+
+<div class="card" style="border:2px solid #ec4899;">
+  <p class="muted" style="margin-top:0;">
+    <strong>用法：</strong>把你這場湊到的所有資源填進來 → 系統依「大到小」設計出對應人數的獎項組合。<br>
+    現有的「未派發獎品」會被覆寫；<strong>已抽走的紀錄會保留、不會被動</strong>。
+  </p>
+
+  <form method="post" action="{{ url_for('admin_generate_preview') }}" autocomplete="off">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+
+    <label>💎 禮品清單（每行一項，格式：<code>名稱, 估價, 數量</code>）</label>
+    <p class="muted" style="margin:4px 0;">
+      例：<code>iPad mini, 15000, 1</code><br>
+      例：<code>AirPods Pro, 8000, 2</code><br>
+      例：<code>悠遊卡儲值, 500, 5</code><br>
+      不用管排序，系統會依估價自動排大到小。
+    </p>
+    <textarea name="items_csv" placeholder="iPad mini, 15000, 1&#10;AirPods Pro, 8000, 2&#10;悠遊卡儲值, 500, 5"></textarea>
+
+    <div class="row">
+      <div style="flex:1;min-width:180px;">
+        <label>💵 現金總金額（NTD）</label>
+        <input name="cash" type="number" min="0" step="100" value="0" required>
+      </div>
+      <div style="flex:1;min-width:180px;">
+        <label>🎟️ 禮券總金額（NTD）</label>
+        <input name="voucher" type="number" min="0" step="100" value="0" required>
+      </div>
+    </div>
+
+    <div class="row">
+      <div style="flex:1;min-width:180px;">
+        <label>👥 本場預計參加人數 *</label>
+        <input name="pool_size" type="number" min="1" placeholder="例如 15" required>
+      </div>
+      <div style="flex:1;min-width:180px;">
+        <label>🧮 金額湊整基數（NTD）</label>
+        <input name="round_step" type="number" min="0" step="100" value="100">
+      </div>
+    </div>
+
+    <button class="btn" type="submit" style="margin-top:16px;">🎲 試算分配</button>
+  </form>
+</div>
+
+{% endif %}
+{% endblock %}
