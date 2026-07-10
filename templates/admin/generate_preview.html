@@ -6,6 +6,7 @@
     <p class="subtitle">
       {% if active_branch %}目前活動館：<strong>{{ active_branch['name'] }}</strong>{% endif %}
       ｜{{ n }} 份獎項
+      ｜模式：<strong>{{ '🎁💵 禮品搭現金' if item_with_cash else '🎁 禮品獨立' }}</strong>
     </p>
   </div>
   <a class="btn secondary" href="{{ url_for('admin_generate_form') }}">← 回去改</a>
@@ -70,6 +71,7 @@
     <input type="hidden" name="voucher" value="{{ voucher }}">
     <input type="hidden" name="pool_size" value="{{ n }}">
     <input type="hidden" name="round_step" value="{{ round_step }}">
+    {% if item_with_cash %}<input type="hidden" name="item_with_cash" value="1">{% endif %}
     <button class="btn success" type="submit" style="font-size:18px;padding:16px 32px;">
       ✅ 確認套用，寫入獎項清單
     </button>

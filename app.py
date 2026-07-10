@@ -1332,60 +1332,94 @@ def _round_to(x, step):
 
 
 def _compute_tier_slots(n):
-    """依人數 N 決定「大到小」的等級名額分配。回傳 [(tier, count), ...]"""
+    """依人數 N 決定「大到小」的等級名額分配。
+    規則：前 3 名固定為 特獎 x1 + 頭獎 x2，後面依 N 展開。"""
     if n <= 0:
         return []
     if n == 1:
         return [('特獎', 1)]
     if n == 2:
         return [('特獎', 1), ('頭獎', 1)]
-    if n <= 4:
-        return [('特獎', 1), ('頭獎', 1), ('二獎', n - 2)]
-    if n <= 8:
-        head = 1
-        two = max(1, (n - 2) // 2)
-        three = n - 1 - head - two
-        return [('特獎', 1), ('頭獎', head), ('二獎', two), ('三獎', three)]
-    # n >= 9：加入普獎
-    head = max(1, n // 10)
-    two = max(1, n // 6)
+    if n == 3:
+        return [('特獎', 1), ('頭獎', 2)]
+    if n == 4:
+        return [('特獎', 1), ('頭獎', 2), ('二獎', 1)]
+    if n <= 6:
+        return [('特獎', 1), ('頭獎', 2), ('二獎', n - 3)]
+    if n <= 10:
+        # 特1 + 頭2 + 二? + 三?
+        two = max(1, (n - 3) // 2)
+        three = n - 3 - two
+        return [('特獎', 1), ('頭獎', 2), ('二獎', two), ('三獎', three)]
+    # n >= 11：加入普獎
+    two = max(1, n // 5)
     three = max(1, n // 4)
-    common = n - 1 - head - two - three
+    common = n - 3 - two - three
     if common <= 0:
-        # 沒剩就把三獎縮小
-        three = max(0, n - 1 - head - two)
+        three = max(0, n - 3 - two)
         return [(t, c) for t, c in
-                [('特獎', 1), ('頭獎', head), ('二獎', two), ('三獎', three)] if c > 0]
-    return [('特獎', 1), ('頭獎', head), ('二獎', two),
+                [('特獎', 1), ('頭獎', 2), ('二獎', two), ('三獎', three)] if c > 0]
+    return [('特獎', 1), ('頭獎', 2), ('二獎', two),
             ('三獎', three), ('普獎', common)]
 
 
-# 各等級的分配權重（每一份用）
-_CASH_WEIGHT = {'特獎': 5, '頭獎': 3, '二獎': 2, '三獎': 1, '普獎': 0}
-_VOUCHER_WEIGHT = {'特獎': 2, '頭獎': 2, '二獎': 2, '三獎': 2, '普獎': 3}
+# Mode A（禮品搭現金）權重：前 3 名重、後面小
+_CASH_WEIGHT_A = {'特獎': 10.0, '頭獎': 5.0, '二獎': 1.0, '三獎': 0.4, '普獎': 0.1}
+_VOUCHER_WEIGHT_A = {'特獎': 0.0, '頭獎': 0.0, '二獎': 2.0, '三獎': 3.0, '普獎': 4.0}
+# Mode B（禮品不搭現金）權重：有 item 的獎項現金/禮券都 0，剩下的照 tier 分
+_CASH_WEIGHT_B = {'特獎': 10.0, '頭獎': 6.0, '二獎': 3.0, '三獎': 1.0, '普獎': 0.3}
+_VOUCHER_WEIGHT_B = {'特獎': 0.0, '頭獎': 0.0, '二獎': 1.0, '三獎': 2.0, '普獎': 4.0}
 
 
-def _distribute_amount(prizes, total, weight_map, round_step, dump_tier):
-    """把 total 依 weight_map 分配到 prizes 的某個欄位（cash 或 voucher）。
-    prizes: list of dict，會就地修改。dump_tier: 尾差累積到哪個等級。"""
+def _weight_for(prize, weight_map, item_with_cash):
+    """回傳 prize 的權重值。Mode B 且此 prize 有 item → 0"""
+    if not item_with_cash and prize['item_name']:
+        return 0
+    return weight_map.get(prize['tier'], 0)
+
+
+def _distribute_amount(prizes, key, total, weight_map, item_with_cash, round_step, dump_first):
+    """依權重把 total 分到 prizes[key]。同 tier 保證同金額。"""
     if total <= 0:
         return
-    total_weight = sum(weight_map.get(p['tier'], 0) for p in prizes)
-    if total_weight <= 0:
+    active = [p for p in prizes if _weight_for(p, weight_map, item_with_cash) > 0]
+    if not active:
         return
-    unit = total / total_weight
-    for p in prizes:
-        w = weight_map.get(p['tier'], 0)
-        if w > 0:
-            p.setdefault('amounts', {})
-            # store amount computation directly on prize entry
-            pass
-    # 兩段：先算未 round 的原值 → round → 補尾差
+    total_w = sum(_weight_for(p, weight_map, item_with_cash) for p in active)
+    unit = total / total_w
+    # 分組 by tier，同 tier 同金額
+    from collections import OrderedDict
+    tier_groups = OrderedDict()
+    for p in active:
+        tier_groups.setdefault(p['tier'], []).append(p)
+    for tier, ps in tier_groups.items():
+        w = _weight_for(ps[0], weight_map, item_with_cash)
+        per = _round_to(unit * w, round_step)
+        for p in ps:
+            p[key] = per
+    # 補尾差：優先加到單人數的 tier（例：特獎）；沒有就均分到最大 tier
+    diff = total - sum(p[key] for p in prizes)
+    if diff == 0:
+        return
+    order_tiers = list(tier_groups.items()) if dump_first else list(reversed(list(tier_groups.items())))
+    for tier, ps in order_tiers:
+        if len(ps) == 1:
+            ps[0][key] = max(0, ps[0][key] + diff)
+            return
+    # 沒有單人數 tier → 挑 group size 最大者均分（保持同 tier 同金額）
+    biggest_tier, biggest_ps = max(tier_groups.items(), key=lambda kv: len(kv[1]))
+    step_ct = len(biggest_ps)
+    per_add = (diff // step_ct // round_step) * round_step if round_step > 0 else diff // step_ct
+    for p in biggest_ps:
+        p[key] = max(0, p[key] + per_add)
+    # 餘數再丟到單一 prize（同 tier 內小落差可接受）
+    remainder = total - sum(p[key] for p in prizes)
+    if remainder != 0:
+        biggest_ps[-1][key] = max(0, biggest_ps[-1][key] + remainder)
 
 
-def _generate_distribution(items_flat, cash, voucher, n, round_step=100):
-    """演算法主體：回傳 list of dict:
-       [{rank, tier, item_name, cash, voucher, total_value}, ...]"""
+def _generate_distribution(items_flat, cash, voucher, n, item_with_cash=True, round_step=100):
+    """回傳 list of dict [{rank, tier, item_name, cash, voucher}, ...]"""
     tiers = _compute_tier_slots(n)
     prizes = []
     rank = 1
@@ -1395,41 +1429,21 @@ def _generate_distribution(items_flat, cash, voucher, n, round_step=100):
                            'item_name': '', 'cash': 0, 'voucher': 0})
             rank += 1
 
-    # 分配禮品：依價值降冪塞入排名靠前的獎
+    # 塞禮品（按估價大到小塞前面幾份）
     items_sorted = sorted(items_flat, key=lambda x: -x[1])
-    for i, (name, _val) in enumerate(items_sorted):
+    for i, (name, _v) in enumerate(items_sorted):
         if i >= len(prizes):
             break
         prizes[i]['item_name'] = name
 
-    # 分配現金
-    total_w_cash = sum(_CASH_WEIGHT.get(p['tier'], 0) for p in prizes)
-    if cash > 0 and total_w_cash > 0:
-        unit = cash / total_w_cash
-        for p in prizes:
-            w = _CASH_WEIGHT.get(p['tier'], 0)
-            p['cash'] = _round_to(unit * w, round_step) if w else 0
-        # 修正尾差 → 加到特獎那一份
-        diff = cash - sum(p['cash'] for p in prizes)
-        if diff != 0:
-            for p in prizes:
-                if p['tier'] == '特獎':
-                    p['cash'] = max(0, p['cash'] + diff)
-                    break
+    # 若使用 Mode B 但完全沒禮品 → 退回 Mode A（不然什麼都分不到）
+    if not item_with_cash and not any(p['item_name'] for p in prizes):
+        item_with_cash = True
 
-    # 分配禮券
-    total_w_v = sum(_VOUCHER_WEIGHT.get(p['tier'], 0) for p in prizes)
-    if voucher > 0 and total_w_v > 0:
-        unit = voucher / total_w_v
-        for p in prizes:
-            w = _VOUCHER_WEIGHT.get(p['tier'], 0)
-            p['voucher'] = _round_to(unit * w, round_step) if w else 0
-        diff = voucher - sum(p['voucher'] for p in prizes)
-        if diff != 0:
-            # 尾差往下丟 —— 普獎優先，否則丟到最後一份
-            for p in reversed(prizes):
-                p['voucher'] = max(0, p['voucher'] + diff)
-                break
+    w_cash = _CASH_WEIGHT_A if item_with_cash else _CASH_WEIGHT_B
+    w_voucher = _VOUCHER_WEIGHT_A if item_with_cash else _VOUCHER_WEIGHT_B
+    _distribute_amount(prizes, 'cash', cash, w_cash, item_with_cash, round_step, dump_first=True)
+    _distribute_amount(prizes, 'voucher', voucher, w_voucher, item_with_cash, round_step, dump_first=False)
     return prizes
 
 
@@ -1493,17 +1507,16 @@ def admin_generate_preview():
     voucher = max(0, to_int(request.form.get('voucher', '0'), 0))
     n = to_int(request.form.get('pool_size', '0'), 0)
     round_step = max(0, to_int(request.form.get('round_step', '100'), 100))
+    item_with_cash = request.form.get('item_with_cash') == '1'
     if n <= 0:
         flash('請輸入正整數的參加人數', 'error')
         return redirect(url_for('admin_generate_form'))
     items_flat, errors = _parse_items_csv(items_raw)
     for e in errors:
         flash(e, 'error')
-    prizes = _generate_distribution(items_flat, cash, voucher, n, round_step)
-    # 為每份加顯示名稱
+    prizes = _generate_distribution(items_flat, cash, voucher, n, item_with_cash, round_step)
     for p in prizes:
         p['display_name'] = _prize_display_name(p)
-    # 計算總值
     total_item_value = sum(v for _, v in items_flat)
     total_pool_value = total_item_value + cash + voucher
     return render_template(
@@ -1511,6 +1524,7 @@ def admin_generate_preview():
         prizes=prizes, active_branch=get_branch(ab_id),
         items_csv=items_raw, cash=cash, voucher=voucher, n=n,
         round_step=round_step,
+        item_with_cash=item_with_cash,
         total_item_value=total_item_value,
         total_pool_value=total_pool_value,
         item_count=len(items_flat),
@@ -1532,11 +1546,12 @@ def admin_generate_apply():
     voucher = max(0, to_int(request.form.get('voucher', '0'), 0))
     n = to_int(request.form.get('pool_size', '0'), 0)
     round_step = max(0, to_int(request.form.get('round_step', '100'), 100))
+    item_with_cash = request.form.get('item_with_cash') == '1'
     if n <= 0:
         flash('人數錯誤', 'error')
         return redirect(url_for('admin_generate_form'))
     items_flat, _errs = _parse_items_csv(items_raw)
-    prizes = _generate_distribution(items_flat, cash, voucher, n, round_step)
+    prizes = _generate_distribution(items_flat, cash, voucher, n, item_with_cash, round_step)
 
     db = get_db()
     try:
