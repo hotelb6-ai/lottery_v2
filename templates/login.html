@@ -1,17 +1,25 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="card" style="max-width:480px;margin:24px auto;">
-  <h1 class="title">{{ event_title }}</h1>
-  <p class="subtitle">請以工號登入。每位員工僅能抽獎一次。</p>
+  <h1 class="title" style="text-align:center;font-size:28px;">
+    🎉 {{ event_title }} 🎊
+  </h1>
+  <p class="subtitle" style="text-align:center;">
+    請以工號登入。每位員工僅能抽獎一次。祝你好運！ 🍀
+  </p>
   <form method="post" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-    <label for="employee_no">工號</label>
+    <label for="employee_no">🆔 工號</label>
     <input id="employee_no" name="employee_no" required placeholder="例如 E001" autocomplete="username">
-    <label for="password">密碼</label>
+    <label for="password">🔒 密碼</label>
     <input id="password" name="password" type="password" required placeholder="請輸入密碼" autocomplete="current-password">
-    <button class="btn block" type="submit" style="margin-top:20px;">登入</button>
+    <button class="btn block" type="submit" style="margin-top:22px;">
+      進入抽獎 →
+    </button>
   </form>
   <div class="hr"></div>
-  <p class="muted"><a href="{{ url_for('admin_login') }}">管理員登入 →</a></p>
+  <p class="muted" style="text-align:center;">
+    <a href="{{ url_for('admin_login') }}">⚙️ 管理員登入</a>
+  </p>
 </div>
 {% endblock %}

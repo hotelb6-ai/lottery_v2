@@ -1,8 +1,8 @@
 {% extends 'base.html' %}
 {% block content %}
 <div class="card" style="max-width:480px;margin:24px auto;">
-  <h1 class="title">管理後台登入</h1>
-  <p class="subtitle">僅供活動主辦人使用</p>
+  <h1 class="title" style="text-align:center;">⚙️ 管理後台登入</h1>
+  <p class="subtitle" style="text-align:center;">僅供活動主辦人使用</p>
   <form method="post" autocomplete="off">
     <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
     <label for="username">帳號</label>

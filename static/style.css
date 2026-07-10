@@ -1,194 +1,416 @@
-/* ---------- Reset & base ---------- */
+/* ====================================================================
+   繽紛歡樂 · 尾牙抽獎主題 CSS
+   暖色調（紅 / 橙 / 金 / 粉 / 紫）+ 五彩統計卡 + 呼吸動畫
+   ==================================================================== */
+
+:root {
+  --red:        #ef4444;
+  --red-deep:   #dc2626;
+  --red-soft:   #fee2e2;
+  --orange:     #fb923c;
+  --orange-deep:#f97316;
+  --gold:       #f59e0b;
+  --gold-deep:  #d97706;
+  --yellow:     #fde047;
+  --pink:       #ec4899;
+  --pink-soft:  #fce7f3;
+  --purple:     #a855f7;
+  --purple-soft:#f3e8ff;
+  --cyan:       #06b6d4;
+  --cyan-soft:  #cffafe;
+  --green:      #16a34a;
+  --green-soft: #dcfce7;
+  --blue:       #2563eb;
+  --slate-900:  #0f172a;
+  --slate-700:  #334155;
+  --slate-500:  #64748b;
+  --slate-300:  #cbd5e1;
+  --slate-100:  #f1f5f9;
+  --slate-50:   #f8fafc;
+
+  --shadow-warm:    0 8px 24px rgba(220, 38, 38, 0.08);
+  --shadow-warm-lg: 0 16px 48px rgba(220, 38, 38, 0.15);
+  --shadow-gold:    0 8px 24px rgba(245, 158, 11, 0.20);
+}
+
 * { box-sizing: border-box; }
+
 html, body {
   margin: 0; padding: 0;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang TC",
                "Microsoft JhengHei", "Noto Sans TC", sans-serif;
-  background: #f4f7fb;
-  color: #1f2937;
+  color: var(--slate-900);
   -webkit-font-smoothing: antialiased;
   -webkit-tap-highlight-color: transparent;
+  min-height: 100vh;
+  background:
+    radial-gradient(circle at 20% 10%, rgba(251, 191, 36, 0.15), transparent 40%),
+    radial-gradient(circle at 80% 30%, rgba(236, 72, 153, 0.12), transparent 40%),
+    radial-gradient(circle at 30% 80%, rgba(6, 182, 212, 0.10), transparent 45%),
+    radial-gradient(circle at 90% 90%, rgba(168, 85, 247, 0.12), transparent 45%),
+    linear-gradient(180deg, #fff8f0 0%, #fef3c7 50%, #fce7f3 100%);
+  background-attachment: fixed;
+}
+
+/* 淺淺的 confetti 圓點 */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  opacity: 0.35;
+  background-image: url("data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='120' height='120' viewBox='0 0 120 120'><circle cx='15' cy='20' r='2' fill='%23fbbf24'/><circle cx='85' cy='45' r='2.5' fill='%23ec4899'/><circle cx='45' cy='80' r='2' fill='%2306b6d4'/><circle cx='100' cy='95' r='2' fill='%23a855f7'/><circle cx='30' cy='55' r='1.5' fill='%23f97316'/></svg>");
 }
 
 .wrap {
+  position: relative;
+  z-index: 1;
   max-width: 960px;
   margin: 0 auto;
   padding: 20px 16px calc(24px + env(safe-area-inset-bottom));
 }
 
-/* ---------- Card ---------- */
+/* -------------------- Card -------------------- */
 .card {
-  background: #fff;
-  border-radius: 16px;
-  padding: 20px;
-  box-shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
-  margin-bottom: 16px;
+  background: #ffffffee;
+  backdrop-filter: blur(4px);
+  border-radius: 20px;
+  padding: 22px;
+  box-shadow: var(--shadow-warm);
+  margin-bottom: 18px;
+  border: 1px solid #ffffff;
 }
-.title { margin: 0 0 4px; font-size: 22px; font-weight: 800; }
-.subtitle { color: #64748b; margin-top: 0; font-size: 14px; }
-.muted { color: #64748b; font-size: 14px; }
-.row { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
 
-/* ---------- Form ---------- */
+.title {
+  margin: 0 0 6px;
+  font-size: 24px;
+  font-weight: 800;
+  color: var(--slate-900);
+  letter-spacing: -0.01em;
+}
+.subtitle { color: var(--slate-500); margin-top: 0; font-size: 14px; }
+.muted    { color: var(--slate-500); font-size: 14px; }
+.row      { display: flex; gap: 12px; flex-wrap: wrap; align-items: center; }
+
+/* -------------------- Form -------------------- */
 label {
   display: block;
   font-weight: 600;
   font-size: 14px;
-  color: #334155;
-  margin-top: 12px;
+  color: var(--slate-700);
+  margin-top: 14px;
 }
 input[type="text"], input[type="password"], input[type="number"],
 input[type="email"], textarea, select {
   width: 100%;
   padding: 14px 12px;
-  border: 1px solid #cbd5e1;
-  border-radius: 10px;
-  background: #fff;
-  font-size: 16px; /* 16px 避免 iOS 自動放大 */
+  border: 1.5px solid var(--slate-300);
+  border-radius: 12px;
+  background: #ffffff;
+  font-size: 16px;
   margin-top: 6px;
   font-family: inherit;
+  transition: border-color 0.15s, box-shadow 0.15s;
 }
 input:focus, textarea:focus, select:focus {
-  outline: 2px solid #2563eb;
-  outline-offset: 1px;
+  outline: none;
+  border-color: var(--red);
+  box-shadow: 0 0 0 3px rgba(239, 68, 68, 0.15);
 }
 textarea { min-height: 120px; }
 
-/* ---------- Buttons ---------- */
+/* -------------------- Buttons -------------------- */
 .btn {
   display: inline-block;
-  background: #2563eb;
+  background: var(--blue);
   color: #fff;
   border: none;
-  border-radius: 12px;
-  padding: 14px 20px;
+  border-radius: 14px;
+  padding: 14px 22px;
   font-size: 16px;
   font-weight: 700;
   cursor: pointer;
   text-decoration: none;
   min-height: 48px;
   line-height: 1;
+  transition: transform 0.1s, box-shadow 0.15s, filter 0.15s;
+  box-shadow: 0 4px 14px rgba(37, 99, 235, 0.25);
 }
-.btn:active { transform: scale(0.98); }
-.btn.secondary { background: #64748b; }
-.btn.danger { background: #dc2626; }
-.btn.success { background: #16a34a; }
-.btn.outline {
-  background: #fff; color: #2563eb; border: 1px solid #2563eb;
-}
-.btn.block { display: block; width: 100%; text-align: center; }
-.btn.big {
-  padding: 24px;
-  font-size: 24px;
-  border-radius: 16px;
-  background: linear-gradient(135deg, #dc2626, #f97316);
-  box-shadow: 0 8px 20px rgba(220, 38, 38, 0.3);
-}
-.btn.big:disabled, .btn:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
-  background: #94a3b8;
-  box-shadow: none;
-}
+.btn:hover  { filter: brightness(1.05); }
+.btn:active { transform: scale(0.97); }
 
-/* ---------- Table ---------- */
-.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.btn.secondary { background: var(--slate-500); box-shadow: 0 4px 14px rgba(100, 116, 139, 0.25); }
+.btn.danger    { background: var(--red-deep); box-shadow: 0 4px 14px rgba(220, 38, 38, 0.3); }
+.btn.success   { background: var(--green); box-shadow: 0 4px 14px rgba(22, 163, 74, 0.3); }
+.btn.outline   { background: #fff; color: var(--blue); border: 2px solid var(--blue); box-shadow: none; }
+.btn.block     { display: block; width: 100%; text-align: center; }
+
+/* 抽獎主 CTA：紅→橙→金 漸層 + 呼吸發光 */
+.btn.big {
+  padding: 26px;
+  font-size: 26px;
+  border-radius: 20px;
+  background: linear-gradient(135deg, #dc2626 0%, #f97316 50%, #f59e0b 100%);
+  box-shadow: 0 10px 30px rgba(220, 38, 38, 0.35);
+  animation: breathe 2.4s ease-in-out infinite;
+  position: relative;
+  overflow: hidden;
+}
+.btn.big::after {
+  content: '';
+  position: absolute;
+  top: -50%; left: -100%;
+  width: 60%; height: 200%;
+  background: linear-gradient(90deg, transparent, rgba(255,255,255,0.4), transparent);
+  transform: skewX(-20deg);
+  animation: shine 3s ease-in-out infinite;
+}
+@keyframes breathe {
+  0%,100% { box-shadow: 0 10px 30px rgba(220, 38, 38, 0.35); transform: translateY(0); }
+  50%     { box-shadow: 0 16px 40px rgba(245, 158, 11, 0.55); transform: translateY(-2px); }
+}
+@keyframes shine {
+  0%   { left: -100%; }
+  50%  { left: 150%; }
+  100% { left: 150%; }
+}
+.btn:disabled, .btn.big:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+  background: var(--slate-500);
+  box-shadow: none;
+  animation: none;
+}
+.btn:disabled::after, .btn.big:disabled::after { display: none; }
+
+/* -------------------- Table -------------------- */
+.table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 12px; }
 table { width: 100%; border-collapse: collapse; min-width: 520px; }
 th, td {
-  border-bottom: 1px solid #e5e7eb;
+  border-bottom: 1px solid var(--slate-100);
   padding: 12px 10px;
   text-align: left;
   vertical-align: top;
   font-size: 14px;
 }
-th { background: #f8fafc; font-weight: 700; color: #475569; }
-tr.inactive td { color: #94a3b8; background: #fafafa; }
+th {
+  background: linear-gradient(180deg, #fef3c7, #fde68a);
+  font-weight: 700;
+  color: var(--slate-700);
+  border-bottom: 2px solid var(--gold);
+}
+tr.inactive td { color: var(--slate-500); background: #fafafa; }
 
-/* ---------- Grid stats ---------- */
+/* -------------------- 五彩統計卡 -------------------- */
 .grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-  gap: 12px;
+  gap: 14px;
+  margin-bottom: 18px;
 }
 .stat {
-  background: linear-gradient(135deg, #eff6ff, #dbeafe);
-  border-radius: 14px;
-  padding: 16px;
+  border-radius: 18px;
+  padding: 18px 16px 20px;
+  position: relative;
+  overflow: hidden;
+  box-shadow: var(--shadow-warm);
+  color: #fff;
 }
-.stat strong { font-size: 13px; color: #1e40af; }
-.stat .num { font-size: 28px; font-weight: 800; margin-top: 6px; }
+.stat strong {
+  font-size: 13px;
+  font-weight: 700;
+  opacity: 0.95;
+  letter-spacing: 0.02em;
+}
+.stat .num {
+  font-size: 32px;
+  font-weight: 900;
+  margin-top: 6px;
+  text-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  letter-spacing: -0.02em;
+}
+.stat::after {
+  content: attr(data-emoji);
+  position: absolute;
+  right: 10px;
+  bottom: 4px;
+  font-size: 44px;
+  opacity: 0.25;
+  line-height: 1;
+}
 
-/* ---------- Flash ---------- */
-.flash-stack { margin-bottom: 12px; }
+/* 每張卡不同色系 —— 依 nth-of-type 輪流 */
+.stat:nth-of-type(1) { background: linear-gradient(135deg, #ef4444, #f97316); }
+.stat:nth-of-type(2) { background: linear-gradient(135deg, #f59e0b, #fbbf24); }
+.stat:nth-of-type(3) { background: linear-gradient(135deg, #06b6d4, #3b82f6); }
+.stat:nth-of-type(4) { background: linear-gradient(135deg, #a855f7, #ec4899); }
+.stat:nth-of-type(5) { background: linear-gradient(135deg, #16a34a, #22c55e); }
+.stat:nth-of-type(6) { background: linear-gradient(135deg, #f97316, #eab308); }
+
+/* -------------------- Flash -------------------- */
+.flash-stack { margin-bottom: 14px; }
 .flash {
   padding: 14px 16px;
-  border-radius: 12px;
+  border-radius: 14px;
   margin-bottom: 8px;
   font-weight: 600;
   font-size: 15px;
+  border-left: 5px solid;
+  animation: slideIn 0.25s ease-out;
 }
-.flash-success { background: #dcfce7; color: #166534; }
-.flash-error   { background: #fee2e2; color: #991b1b; }
+.flash-success {
+  background: var(--green-soft);
+  color: #14532d;
+  border-color: var(--green);
+}
+.flash-error {
+  background: var(--red-soft);
+  color: #7f1d1d;
+  border-color: var(--red-deep);
+}
+@keyframes slideIn {
+  from { transform: translateY(-8px); opacity: 0; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
 
-/* ---------- Nav ---------- */
+/* -------------------- Nav -------------------- */
 .nav {
   display: flex; gap: 8px; flex-wrap: wrap;
-  margin-bottom: 16px;
+  margin-bottom: 18px;
 }
 .nav a {
-  padding: 10px 14px;
-  border-radius: 10px;
-  background: #fff;
-  color: #475569;
+  padding: 10px 16px;
+  border-radius: 12px;
+  background: #ffffffdd;
+  color: var(--slate-700);
   text-decoration: none;
   font-weight: 600;
   font-size: 14px;
-  box-shadow: 0 2px 6px rgba(15, 23, 42, 0.04);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, 0.06);
+  transition: transform 0.1s, box-shadow 0.15s;
 }
-.nav a.active { background: #2563eb; color: #fff; }
-
-/* ---------- Hero (draw page) ---------- */
-.hero {
-  background: linear-gradient(135deg, #1e3a8a, #dc2626);
+.nav a:hover { transform: translateY(-1px); box-shadow: 0 4px 12px rgba(15, 23, 42, 0.10); }
+.nav a.active {
+  background: linear-gradient(135deg, var(--red-deep), var(--orange-deep));
   color: #fff;
+  box-shadow: 0 4px 14px rgba(220, 38, 38, 0.35);
+}
+
+/* -------------------- Hero（抽獎頁）-------------------- */
+.hero {
+  position: relative;
+  background:
+    radial-gradient(circle at 15% 30%, rgba(253, 224, 71, 0.35), transparent 50%),
+    radial-gradient(circle at 85% 70%, rgba(236, 72, 153, 0.30), transparent 55%),
+    linear-gradient(135deg, #dc2626 0%, #f97316 45%, #f59e0b 100%);
+  color: #fff;
+  border-radius: 24px;
+  padding: 32px 24px;
+  margin-bottom: 18px;
+  box-shadow: 0 12px 40px rgba(220, 38, 38, 0.35);
+  overflow: hidden;
+}
+.hero::before {
+  content: '🎊';
+  position: absolute; top: 8px; left: 14px;
+  font-size: 40px; opacity: 0.85;
+  animation: floatY 3s ease-in-out infinite;
+}
+.hero::after {
+  content: '🎉';
+  position: absolute; bottom: 10px; right: 16px;
+  font-size: 44px; opacity: 0.9;
+  animation: floatY 3s ease-in-out infinite 1.5s;
+}
+@keyframes floatY {
+  0%,100% { transform: translateY(0) rotate(-8deg); }
+  50%     { transform: translateY(-6px) rotate(8deg); }
+}
+.hero h1 {
+  margin: 0;
+  font-size: 32px;
+  font-weight: 900;
+  text-shadow: 0 3px 12px rgba(0,0,0,0.25);
+  letter-spacing: 0.01em;
+}
+.hero p {
+  margin: 8px 0 0;
+  opacity: 0.96;
+  font-size: 15px;
+}
+
+/* -------------------- 中獎顯示：獎狀感 -------------------- */
+.result-card {
+  position: relative;
+  background:
+    radial-gradient(circle at 20% 20%, rgba(251, 191, 36, 0.35), transparent 50%),
+    radial-gradient(circle at 80% 80%, rgba(236, 72, 153, 0.30), transparent 50%),
+    linear-gradient(135deg, #fff7ed, #fef3c7 50%, #fce7f3);
   border-radius: 20px;
   padding: 28px 22px;
-  margin-bottom: 16px;
-}
-.hero h1 { margin: 0; font-size: 28px; }
-.hero p { margin: 6px 0 0; opacity: 0.9; }
-
-.result-card {
-  border: 2px dashed #dc2626;
-  background: #fff7ed;
-  border-radius: 16px;
-  padding: 22px;
   text-align: center;
+  border: 3px dashed var(--gold-deep);
+  box-shadow: var(--shadow-gold);
+  overflow: hidden;
 }
-.result-card .prize-name {
+.result-card::before,
+.result-card::after {
+  position: absolute;
   font-size: 32px;
-  font-weight: 800;
-  color: #b91c1c;
-  margin: 10px 0;
+  opacity: 0.85;
+  animation: floatY 3.5s ease-in-out infinite;
 }
+.result-card::before { content: '🎁'; top: 10px; left: 12px; }
+.result-card::after  { content: '✨'; bottom: 10px; right: 12px; animation-delay: 1.5s; }
+
 .result-card .tier {
   display: inline-block;
-  background: #dc2626;
+  background: linear-gradient(135deg, var(--red-deep), var(--orange-deep));
   color: #fff;
   border-radius: 999px;
-  padding: 4px 12px;
-  font-weight: 700;
+  padding: 6px 16px;
+  font-weight: 800;
   font-size: 14px;
+  box-shadow: 0 4px 12px rgba(220, 38, 38, 0.35);
+}
+.result-card .prize-name {
+  font-size: 34px;
+  font-weight: 900;
+  margin: 14px 0 10px;
+  background: linear-gradient(135deg, #dc2626, #f97316, #f59e0b);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  letter-spacing: 0.01em;
+  text-shadow: 0 2px 4px rgba(220, 38, 38, 0.1);
+  animation: popIn 0.6s cubic-bezier(0.34, 1.56, 0.64, 1);
+}
+@keyframes popIn {
+  0%   { transform: scale(0.5); opacity: 0; }
+  60%  { transform: scale(1.1); opacity: 1; }
+  100% { transform: scale(1);   opacity: 1; }
 }
 
-/* ---------- Divider ---------- */
-.hr { height: 1px; background: #e5e7eb; margin: 14px 0; }
+/* -------------------- Divider -------------------- */
+.hr { height: 1px; background: var(--slate-100); margin: 16px 0; }
 
-/* ---------- Responsive ---------- */
+/* -------------------- Details（後台展開式）-------------------- */
+details summary {
+  padding: 4px 0;
+  user-select: none;
+}
+details[open] summary { color: var(--red-deep); }
+
+/* -------------------- 響應式 -------------------- */
 @media (max-width: 480px) {
   .wrap { padding: 12px; }
-  .card { padding: 16px; border-radius: 14px; }
-  .title { font-size: 20px; }
-  .hero h1 { font-size: 24px; }
+  .card { padding: 18px; border-radius: 18px; }
+  .title { font-size: 22px; }
+  .hero  { padding: 26px 20px; border-radius: 20px; }
+  .hero h1 { font-size: 26px; }
   .btn.big { font-size: 22px; padding: 22px; }
+  .stat .num { font-size: 28px; }
+  .result-card .prize-name { font-size: 28px; }
+  .result-card::before, .result-card::after { font-size: 26px; }
 }
