@@ -1363,42 +1363,61 @@ def _compute_tier_slots(n):
             ('三獎', three), ('普獎', common)]
 
 
-# Mode A（禮品搭現金）權重：前 3 名重、後面小
-_CASH_WEIGHT_A = {'特獎': 10.0, '頭獎': 5.0, '二獎': 1.0, '三獎': 0.4, '普獎': 0.1}
-_VOUCHER_WEIGHT_A = {'特獎': 0.0, '頭獎': 0.0, '二獎': 2.0, '三獎': 3.0, '普獎': 4.0}
-# Mode B（禮品不搭現金）權重：有 item 的獎項現金/禮券都 0，剩下的照 tier 分
-_CASH_WEIGHT_B = {'特獎': 10.0, '頭獎': 6.0, '二獎': 3.0, '三獎': 1.0, '普獎': 0.3}
-_VOUCHER_WEIGHT_B = {'特獎': 0.0, '頭獎': 0.0, '二獎': 1.0, '三獎': 2.0, '普獎': 4.0}
+# 每個 tier 使用哪種貨幣（cash / voucher）。'item' 表示只有禮品沒錢。
+# Mode A：前 3 名 + 二獎 = 現金；三/普 = 禮券。每份獎只有一種貨幣。
+_TIER_CURRENCY_A = {'特獎': 'cash', '頭獎': 'cash', '二獎': 'cash',
+                    '三獎': 'voucher', '普獎': 'voucher'}
+# Mode B：有 item 的獎項 → 'item'（沒有錢），其餘依 tier 分
+# 特/頭獎 通常有 item（頂級禮品）→ item only
+# 二/三獎 = 現金（因為前面拿禮品沒現金，現金往這集中）
+# 普獎 = 禮券
+_TIER_CURRENCY_B_NON_ITEM = {'特獎': 'cash', '頭獎': 'cash', '二獎': 'cash',
+                              '三獎': 'cash', '普獎': 'voucher'}
+
+# 現金/禮券的權重（僅適用於「該貨幣所在的 tier」）
+_CASH_WEIGHT_A = {'特獎': 10.0, '頭獎': 5.0, '二獎': 1.0}
+_VOUCHER_WEIGHT_A = {'三獎': 1.0, '普獎': 1.5}
+_CASH_WEIGHT_B = {'特獎': 5.0, '頭獎': 4.0, '二獎': 3.0, '三獎': 1.0}
+_VOUCHER_WEIGHT_B = {'普獎': 1.0}
 
 
-def _weight_for(prize, weight_map, item_with_cash):
-    """回傳 prize 的權重值。Mode B 且此 prize 有 item → 0"""
-    if not item_with_cash and prize['item_name']:
+def _prize_currency(prize, item_with_cash):
+    """回傳這份獎項使用的貨幣：'cash' / 'voucher' / None (item only)"""
+    tier = prize['tier']
+    if item_with_cash:
+        return _TIER_CURRENCY_A.get(tier, 'voucher')
+    # Mode B: 有 item = None（不搭錢）
+    if prize['item_name']:
+        return None
+    return _TIER_CURRENCY_B_NON_ITEM.get(tier, 'voucher')
+
+
+def _weight_for(prize, weight_map, item_with_cash, currency):
+    """回傳 prize 的權重值。若此 prize 不是這個 currency，回 0。"""
+    if _prize_currency(prize, item_with_cash) != currency:
         return 0
     return weight_map.get(prize['tier'], 0)
 
 
-def _distribute_amount(prizes, key, total, weight_map, item_with_cash, round_step, dump_first):
-    """依權重把 total 分到 prizes[key]。同 tier 保證同金額。"""
+def _distribute_amount(prizes, key, total, weight_map, item_with_cash, round_step, dump_first, currency):
+    """把 total 依權重分到 prizes[key]。只作用於 currency 對應的 prizes。同 tier 同金額。"""
     if total <= 0:
         return
-    active = [p for p in prizes if _weight_for(p, weight_map, item_with_cash) > 0]
+    active = [p for p in prizes if _weight_for(p, weight_map, item_with_cash, currency) > 0]
     if not active:
         return
-    total_w = sum(_weight_for(p, weight_map, item_with_cash) for p in active)
+    total_w = sum(_weight_for(p, weight_map, item_with_cash, currency) for p in active)
     unit = total / total_w
-    # 分組 by tier，同 tier 同金額
     from collections import OrderedDict
     tier_groups = OrderedDict()
     for p in active:
         tier_groups.setdefault(p['tier'], []).append(p)
     for tier, ps in tier_groups.items():
-        w = _weight_for(ps[0], weight_map, item_with_cash)
+        w = _weight_for(ps[0], weight_map, item_with_cash, currency)
         per = _round_to(unit * w, round_step)
         for p in ps:
             p[key] = per
-    # 補尾差：優先加到單人數的 tier（例：特獎）；沒有就均分到最大 tier
-    diff = total - sum(p[key] for p in prizes)
+    diff = total - sum(p[key] for p in prizes if _prize_currency(p, item_with_cash) == currency)
     if diff == 0:
         return
     order_tiers = list(tier_groups.items()) if dump_first else list(reversed(list(tier_groups.items())))
@@ -1406,14 +1425,12 @@ def _distribute_amount(prizes, key, total, weight_map, item_with_cash, round_ste
         if len(ps) == 1:
             ps[0][key] = max(0, ps[0][key] + diff)
             return
-    # 沒有單人數 tier → 挑 group size 最大者均分（保持同 tier 同金額）
     biggest_tier, biggest_ps = max(tier_groups.items(), key=lambda kv: len(kv[1]))
     step_ct = len(biggest_ps)
     per_add = (diff // step_ct // round_step) * round_step if round_step > 0 else diff // step_ct
     for p in biggest_ps:
         p[key] = max(0, p[key] + per_add)
-    # 餘數再丟到單一 prize（同 tier 內小落差可接受）
-    remainder = total - sum(p[key] for p in prizes)
+    remainder = total - sum(p[key] for p in prizes if _prize_currency(p, item_with_cash) == currency)
     if remainder != 0:
         biggest_ps[-1][key] = max(0, biggest_ps[-1][key] + remainder)
 
@@ -1436,14 +1453,16 @@ def _generate_distribution(items_flat, cash, voucher, n, item_with_cash=True, ro
             break
         prizes[i]['item_name'] = name
 
-    # 若使用 Mode B 但完全沒禮品 → 退回 Mode A（不然什麼都分不到）
+    # Mode B 但完全沒禮品 → 退回 Mode A
     if not item_with_cash and not any(p['item_name'] for p in prizes):
         item_with_cash = True
 
     w_cash = _CASH_WEIGHT_A if item_with_cash else _CASH_WEIGHT_B
     w_voucher = _VOUCHER_WEIGHT_A if item_with_cash else _VOUCHER_WEIGHT_B
-    _distribute_amount(prizes, 'cash', cash, w_cash, item_with_cash, round_step, dump_first=True)
-    _distribute_amount(prizes, 'voucher', voucher, w_voucher, item_with_cash, round_step, dump_first=False)
+    _distribute_amount(prizes, 'cash', cash, w_cash, item_with_cash,
+                       round_step, dump_first=True, currency='cash')
+    _distribute_amount(prizes, 'voucher', voucher, w_voucher, item_with_cash,
+                       round_step, dump_first=False, currency='voucher')
     return prizes
 
 
