@@ -93,7 +93,7 @@
             <td>{{ r['name'] }}</td>
             <td>{{ r['department'] or '-' }}</td>
             <td>{{ r['prize_name'] }}（{{ r['prize_tier'] or '普獎' }}）</td>
-            <td>{{ r['unit_code'] }}</td>
+            <td>{{ r['unit_code'] | unit_short }}</td>
             <td>{{ r['drawn_at'] }}</td>
           </tr>
         {% else %}

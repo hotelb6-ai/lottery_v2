@@ -25,7 +25,7 @@
     <div class="result-card" style="margin-top:14px;">
       <span class="tier">{{ record['prize_tier'] or '普獎' }}</span>
       <div class="prize-name">{{ record['prize_name'] }}</div>
-      <p class="muted" style="margin:8px 0;">🎟️ 獎品編號：{{ record['unit_code'] }}</p>
+      <p class="muted" style="margin:8px 0;">🎟️ 獎品編號：{{ record['unit_code'] | unit_short }}</p>
       <p class="muted" style="margin:8px 0;">⏰ 抽獎時間：{{ record['drawn_at'] }}</p>
     </div>
     <p style="text-align:center;margin-top:18px;font-weight:600;">

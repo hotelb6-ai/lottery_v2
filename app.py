@@ -451,6 +451,15 @@ def csrf_guard():
         return 'CSRF token 驗證失敗，請重新整理頁面後再試。', 400
 
 
+@app.template_filter('unit_short')
+def unit_short_filter(unit_code):
+    """把 unit_code 前面的名稱剝掉，只顯示最後 2 段（避免改名後 unit_code 誤導）。"""
+    if not unit_code:
+        return ''
+    parts = str(unit_code).split('-')
+    return '-'.join(parts[-2:]) if len(parts) >= 2 else unit_code
+
+
 @app.context_processor
 def inject_globals():
     active_id = active_branch_id()
@@ -1019,9 +1028,9 @@ def admin_prize_new():
         )
         prize_id = cur.lastrowid
 
-    # 一律加隨機後綴，避免同名獎項的 unit_code 撞名
+    # 不把獎項名放進 unit_code（改名時不會不同步）；只用隨機 hex + 序號
     suffix = secrets.token_hex(2)
-    units = [(prize_id, f"{name}-{suffix}-{i:03d}") for i in range(1, quantity + 1)]
+    units = [(prize_id, f"{suffix}-{i:03d}") for i in range(1, quantity + 1)]
     db.executemany(
         'INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)', units
     )
@@ -1047,6 +1056,19 @@ def admin_prize_edit(prize_id):
         'UPDATE prizes SET name=?, tier=?, branch_id=? WHERE id=?',
         (name, tier, branch_id, prize_id),
     )
+    # 順便把「未派發」的 unit_code 也重新生成，避免舊 code 內含舊名
+    # 已 ASSIGNED 的保留（歷史紀錄）
+    non_assigned = db.execute(
+        "SELECT id FROM prize_units WHERE prize_id = ? AND status != 'ASSIGNED' ORDER BY id",
+        (prize_id,),
+    ).fetchall()
+    if non_assigned:
+        suffix = secrets.token_hex(2)
+        for i, u in enumerate(non_assigned, 1):
+            db.execute(
+                'UPDATE prize_units SET unit_code = ? WHERE id = ?',
+                (f"{suffix}-{i:03d}", u['id']),
+            )
     db.commit()
     flash('已更新', 'success')
     return redirect(url_for('admin_prizes'))
@@ -1064,8 +1086,9 @@ def admin_prize_add_units(prize_id):
     existing = db.execute(
         'SELECT COUNT(*) AS c FROM prize_units WHERE prize_id = ?', (prize_id,)
     ).fetchone()['c']
+    suffix = secrets.token_hex(2)
     units = [
-        (prize_id, f"{prize['name']}-{i:03d}-{secrets.token_hex(2)}")
+        (prize_id, f"{suffix}-{i:03d}")
         for i in range(existing + 1, existing + qty + 1)
     ]
     db.executemany('INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)', units)
@@ -1605,7 +1628,7 @@ def admin_generate_apply():
                     (display, p['tier'], ab_id, now_str()),
                 )
                 prize_id = cur.lastrowid
-            unit_code = f"{p['tier']}-{p['rank']:03d}-{secrets.token_hex(2)}"
+            unit_code = f"{secrets.token_hex(2)}-{p['rank']:03d}"
             db.execute(
                 'INSERT INTO prize_units(prize_id, unit_code) VALUES (?, ?)',
                 (prize_id, unit_code),
@@ -1776,7 +1799,7 @@ def admin_export_winners():
         writer.writerow([
             r['employee_no'], r['name'], r['department'] or '',
             r['prize_name'], r['prize_tier'] or '',
-            r['unit_code'], r['drawn_at'],
+            unit_short_filter(r['unit_code']), r['drawn_at'],
         ])
     csv_bytes = '﻿'.encode('utf-8') + output.getvalue().encode('utf-8')
     return Response(
