@@ -195,6 +195,8 @@ CREATE TABLE IF NOT EXISTS draws (
     prize_unit_id INTEGER NOT NULL UNIQUE,
     drawn_at TEXT NOT NULL,
     request_id TEXT NOT NULL UNIQUE,
+    claimed INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT,
     FOREIGN KEY(employee_id) REFERENCES employees(id),
     FOREIGN KEY(prize_unit_id) REFERENCES prize_units(id)
 );
@@ -256,7 +258,9 @@ CREATE TABLE IF NOT EXISTS draws (
     employee_id INTEGER NOT NULL UNIQUE REFERENCES employees(id),
     prize_unit_id INTEGER NOT NULL UNIQUE REFERENCES prize_units(id),
     drawn_at TEXT NOT NULL,
-    request_id TEXT NOT NULL UNIQUE
+    request_id TEXT NOT NULL UNIQUE,
+    claimed INTEGER NOT NULL DEFAULT 0,
+    claimed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS admins (
@@ -299,6 +303,11 @@ def init_db():
             cur.execute(
                 f'ALTER TABLE {table} ADD COLUMN branch_id INTEGER REFERENCES branches(id)'
             )
+    # 遷移：draws 加 claimed / claimed_at
+    if not _has_column(cur, 'draws', 'claimed'):
+        cur.execute('ALTER TABLE draws ADD COLUMN claimed INTEGER NOT NULL DEFAULT 0')
+    if not _has_column(cur, 'draws', 'claimed_at'):
+        cur.execute('ALTER TABLE draws ADD COLUMN claimed_at TEXT')
 
     # 第一次啟動：建管理員
     cur.execute(_translate('SELECT COUNT(*) AS c FROM admins'))
@@ -760,6 +769,12 @@ def admin_dashboard():
                 'JOIN employees e ON e.id = d.employee_id WHERE e.branch_id = ?',
                 (ab_id,),
             ).fetchone()['c'],
+            'claimed_total': db.execute(
+                'SELECT COUNT(*) AS c FROM draws d '
+                'JOIN employees e ON e.id = d.employee_id '
+                'WHERE e.branch_id = ? AND d.claimed = 1',
+                (ab_id,),
+            ).fetchone()['c'],
             'prize_total': db.execute(
                 'SELECT COUNT(*) AS c FROM prize_units pu '
                 'JOIN prizes p ON p.id = pu.prize_id WHERE p.branch_id = ?',
@@ -774,7 +789,8 @@ def admin_dashboard():
         }
         records = db.execute(
             '''
-            SELECT e.employee_no, e.name, e.department, b.name AS branch_name,
+            SELECT d.id AS draw_id, d.claimed, d.claimed_at,
+                   e.employee_no, e.name, e.department, b.name AS branch_name,
                    d.drawn_at, p.name AS prize_name, p.tier AS prize_tier, pu.unit_code
             FROM draws d
             JOIN employees e ON e.id = d.employee_id
@@ -804,12 +820,14 @@ def admin_dashboard():
         summary = {
             'employee_total': db.execute('SELECT COUNT(*) AS c FROM employees WHERE is_active=1').fetchone()['c'],
             'drawn_total': db.execute('SELECT COUNT(*) AS c FROM draws').fetchone()['c'],
+            'claimed_total': db.execute('SELECT COUNT(*) AS c FROM draws WHERE claimed = 1').fetchone()['c'],
             'prize_total': db.execute('SELECT COUNT(*) AS c FROM prize_units').fetchone()['c'],
             'remaining_total': db.execute("SELECT COUNT(*) AS c FROM prize_units WHERE status='AVAILABLE'").fetchone()['c'],
         }
         records = db.execute(
             '''
-            SELECT e.employee_no, e.name, e.department, b.name AS branch_name,
+            SELECT d.id AS draw_id, d.claimed, d.claimed_at,
+                   e.employee_no, e.name, e.department, b.name AS branch_name,
                    d.drawn_at, p.name AS prize_name, p.tier AS prize_tier, pu.unit_code
             FROM draws d
             JOIN employees e ON e.id = d.employee_id
@@ -1777,6 +1795,25 @@ def admin_change_password():
     return redirect(url_for('admin_settings'))
 
 
+@app.route('/admin/draws/<int:draw_id>/toggle_claim', methods=['POST'])
+@admin_required
+def admin_draw_toggle_claim(draw_id):
+    """切換此中獎紀錄的『已領獎』狀態。"""
+    db = get_db()
+    row = db.execute('SELECT claimed FROM draws WHERE id = ?', (draw_id,)).fetchone()
+    if not row:
+        flash('找不到此中獎紀錄', 'error')
+        return redirect(url_for('admin_dashboard'))
+    if row['claimed']:
+        db.execute('UPDATE draws SET claimed=0, claimed_at=NULL WHERE id=?', (draw_id,))
+    else:
+        db.execute('UPDATE draws SET claimed=1, claimed_at=? WHERE id=?',
+                   (now_str(), draw_id))
+    db.commit()
+    # 保留原本查詢參數（filter_branch）
+    return redirect(request.referrer or url_for('admin_dashboard'))
+
+
 @app.route('/admin/export/winners.csv')
 @admin_required
 def admin_export_winners():
@@ -1784,7 +1821,7 @@ def admin_export_winners():
         '''
         SELECT e.employee_no, e.name, e.department,
                p.name AS prize_name, p.tier AS prize_tier,
-               pu.unit_code, d.drawn_at
+               pu.unit_code, d.drawn_at, d.claimed, d.claimed_at
         FROM draws d
         JOIN employees e ON e.id = d.employee_id
         JOIN prize_units pu ON pu.id = d.prize_unit_id
@@ -1794,12 +1831,15 @@ def admin_export_winners():
     ).fetchall()
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['工號', '姓名', '部門', '獎項', '等級', '獎品編號', '抽獎時間'])
+    writer.writerow(['工號', '姓名', '部門', '獎項', '等級', '獎品編號',
+                     '抽獎時間', '已領獎', '領獎時間'])
     for r in rows:
         writer.writerow([
             r['employee_no'], r['name'], r['department'] or '',
             r['prize_name'], r['prize_tier'] or '',
             unit_short_filter(r['unit_code']), r['drawn_at'],
+            '是' if r['claimed'] else '否',
+            r['claimed_at'] or '',
         ])
     csv_bytes = '﻿'.encode('utf-8') + output.getvalue().encode('utf-8')
     return Response(

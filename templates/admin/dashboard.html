@@ -43,7 +43,8 @@
 
 <div class="grid">
   <div class="stat" data-emoji="👥"><strong>員工總數</strong><div class="num">{{ summary.employee_total }}</div></div>
-  <div class="stat" data-emoji="✅"><strong>已抽人數</strong><div class="num">{{ summary.drawn_total }}</div></div>
+  <div class="stat" data-emoji="🎲"><strong>已抽人數</strong><div class="num">{{ summary.drawn_total }}</div></div>
+  <div class="stat" data-emoji="🎊"><strong>已領獎</strong><div class="num">{{ summary.claimed_total }}／{{ summary.drawn_total }}</div></div>
   <div class="stat" data-emoji="🏆"><strong>獎品總數</strong><div class="num">{{ summary.prize_total }}</div></div>
   <div class="stat" data-emoji="🎁"><strong>剩餘獎品</strong><div class="num">{{ summary.remaining_total }}</div></div>
 </div>
@@ -83,11 +84,28 @@
   <div class="table-wrap">
     <table>
       <thead>
-        <tr><th>館別</th><th>工號</th><th>姓名</th><th>部門</th><th>獎項</th><th>編號</th><th>時間</th></tr>
+        <tr><th>領獎</th><th>館別</th><th>工號</th><th>姓名</th><th>部門</th><th>獎項</th><th>編號</th><th>時間</th></tr>
       </thead>
       <tbody>
         {% for r in records %}
-          <tr>
+          <tr class="{{ 'inactive' if r['claimed'] else '' }}">
+            <td style="white-space:nowrap;">
+              <form method="post" action="{{ url_for('admin_draw_toggle_claim', draw_id=r['draw_id']) }}" style="margin:0;">
+                <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                {% if r['claimed'] %}
+                  <button class="btn success" type="submit"
+                          title="已領於 {{ r['claimed_at'] }}｜點一下取消"
+                          style="padding:6px 12px;font-size:13px;min-height:auto;">
+                    ✅ 已領
+                  </button>
+                {% else %}
+                  <button class="btn outline" type="submit"
+                          style="padding:6px 12px;font-size:13px;min-height:auto;">
+                    ☐ 未領
+                  </button>
+                {% endif %}
+              </form>
+            </td>
             <td>{{ r['branch_name'] or '—' }}</td>
             <td>{{ r['employee_no'] }}</td>
             <td>{{ r['name'] }}</td>
@@ -97,7 +115,7 @@
             <td>{{ r['drawn_at'] }}</td>
           </tr>
         {% else %}
-          <tr><td colspan="7" class="muted">目前尚無抽獎紀錄</td></tr>
+          <tr><td colspan="8" class="muted">目前尚無抽獎紀錄</td></tr>
         {% endfor %}
       </tbody>
     </table>
